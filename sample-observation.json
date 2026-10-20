@@ -1,0 +1,11 @@
+{
+  "description": "本次开发验证时从实际搜索页读取的前五件非推广商品，仅作观察记录。安装后会重新抓取并建立基线，不导入这组旧 ID。",
+  "searchUrl": "https://jp.mercari.com/search?keyword=%E6%BD%94%E4%B8%96%E4%B8%80&order=desc&sort=created_time",
+  "items": [
+    { "itemId": "m71763838263", "title": "ブルーロック 韓国 原画ステッカー 潔世一" },
+    { "itemId": "m60021730375", "title": "ブルーロック 潔世一 アリナミン アクリルスタンド 当選品" },
+    { "itemId": "m73327133079", "title": "ブルーロック にとたん 潔世一 凪誠士郎セット" },
+    { "itemId": "m10641921146", "title": "ブルーロック Qposket 御影玲王" },
+    { "itemId": "m43129697000", "title": "潔世一、御影玲王ローソンカード" }
+  ]
+}

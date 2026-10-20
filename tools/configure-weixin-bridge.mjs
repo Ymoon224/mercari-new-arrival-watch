@@ -1,0 +1,12 @@
+import path from "node:path";
+import { randomBytes } from "node:crypto";
+import { discover } from "../bridge/discover.mjs";
+import { readJson, writeJson } from "../bridge/weixin.mjs";
+const destination = path.resolve(process.argv[2] || "D:\\OpenClaw\\mercari-bridge");
+if (destination.toLowerCase() !== "d:\\openclaw\\mercari-bridge") throw new Error("转发服务只安装到 D:\\OpenClaw\\mercari-bridge");
+const file = path.join(destination, "config.json");
+const previous = await readJson(file, {});
+const discovered = await discover("D:\\OpenClaw", previous);
+const token = /^[a-f0-9]{64}$/.test(previous.token || "") ? previous.token : randomBytes(32).toString("hex");
+await writeJson(file, { ...previous, ...discovered, port: 17869, token });
+console.log("本机微信转发配置已保存到 D 盘，连接密钥不会输出到日志。");

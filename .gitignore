@@ -1,0 +1,20 @@
+.codex_tmp/
+artifacts/
+node_modules/
+*.zip
+
+# Local configuration, login credentials and durable runtime state
+.env
+.env.*
+!.env.example
+*.log
+*.pid
+bridge/config.json
+bridge/recipients.json
+bridge/deliveries.json
+bridge/queues/
+bridge/deleted-queues/
+bridge/backups/
+**/accounts.json
+**/*.context-tokens.json
+**/*.sync.json

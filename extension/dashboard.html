@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Mercari 上新提醒</title>
+  <link rel="stylesheet" href="dashboard.css">
+</head>
+<body>
+  <main>
+    <header><div><div class="eyebrow">MERCARI WATCH · v1.3.2</div><h1>有上新，再提醒你。</h1><p>由你管理关键词，按接收人分发提醒。</p></div><span id="status" class="pill">未启动</span></header>
+    <div id="feedback" role="status" aria-live="polite"></div>
+    <div id="diagnostic" class="error" role="status" hidden></div>
+    <div id="delivery-warning" class="error" role="status" hidden></div>
+    <section class="card"><div class="section-head"><h2>关键词监控 <span id="monitor-count" class="muted"></span></h2><button id="new-monitor" class="secondary" type="button">＋ 添加关键词</button></div><div id="monitor-list" class="watch-list"></div><p class="muted">点击关键词查看商品和记录。每条可单独开始、暂停及设置检查间隔。</p></section>
+    <section id="recipient-management" class="card" hidden><details><summary><strong>微信接收人管理 · 仅本机管理员</strong></summary><p class="muted">接收人只有收消息和回复激活的权限，不能通过微信更改关键词、间隔或其他用户设置。</p><p class="muted">添加用户：先双击 D:\OpenClaw\mercari-bridge\添加微信接收人.cmd，让新用户微信扫码，再点“同步已绑定用户”。新用户不会自动订阅已有关键词；请在任务设置中勾选接收人。</p><button id="sync-recipients" type="button" class="secondary">同步已绑定用户</button><p id="recipients-error" class="muted"></p><div id="recipient-list"></div></details></section>
+    <section id="selected-controls" class="controls card"><div><strong id="watch-label">当前关键词</strong><p id="activity">首次检查只建立基线，不发送旧商品。</p></div><div class="buttons"><button id="check" class="secondary">立即检查</button><button id="toggle">开始此关键词</button></div></section>
+    <div class="layout">
+      <div>
+        <section class="card"><div class="section-head"><h2 id="snapshot-title">最新 5 件非推广商品</h2><a id="search-link" target="_blank" rel="noreferrer" hidden>打开搜索页 ↗</a></div><div id="snapshot" class="empty">开始监控后，这里会显示首次抓取的商品。</div><p id="history-count" class="muted"></p></section>
+        <section class="card"><div class="section-head"><h2 id="events-title">发现记录</h2><span id="event-count" class="muted">0 次</span></div><div id="events" class="empty">有新的商品出现时，记录会保存在这里。</div></section>
+        <section id="pending-box" class="card warning" hidden><h2>通知待重试</h2><p id="pending-text"></p><p class="muted">成功过的渠道不会重复发送。服务接受消息不代表微信已经送达。</p><button id="clear-pending" class="secondary">清除待发队列</button></section>
+      </div>
+      <aside>
+        <form id="monitor-form" class="card">
+          <h2 id="editor-title">当前关键词设置</h2>
+          <label for="keyword">搜索关键词</label><input id="keyword" value="潔世一" maxlength="100" required>
+          <label for="interval-minutes">检查间隔（分钟）</label><input id="interval-minutes" type="number" value="1" min="1" max="1440" step="1" required>
+          <label for="scan-count">每轮读取非推广商品数</label><select id="scan-count"><option value="5">5 件 · 严格按原方案</option><option value="20" selected>20 件 · 推荐</option><option value="50">50 件</option><option value="100">100 件</option></select>
+          <p class="muted">间隔可设 1–1440 分钟。面板显示前 5 件；只与上一轮成功抓取的结果比较，新出现的商品才推送。更改关键词后重新建立基线。</p>
+          <label class="checkbox"><input type="checkbox" id="monitor-enabled">启用此关键词的监控</label>
+          <fieldset id="recipient-fields" hidden><legend>接收此关键词的微信用户</legend><div id="monitor-recipients"></div><p class="muted">由你勾选接收人。不同用户可分别建立相同关键词、不同间隔的任务。未勾选任何用户时，这条任务不发微信。</p></fieldset>
+          <button id="save-monitor" type="submit" class="full">保存此关键词</button>
+          <div class="buttons editor-buttons"><button id="cancel-new" type="button" class="secondary" hidden>取消新增</button><button id="delete-monitor" type="button" class="secondary danger">删除此关键词</button></div>
+        </form>
+        <form id="settings-form" class="card">
+          <h2>通知方式</h2><p class="muted">共用本机转发连接；每条任务单独选择微信接收人，只有本机管理员可修改。</p>
+          <label class="checkbox"><input type="checkbox" id="desktop" checked>本机浏览器通知</label>
+          <label for="wechat">微信推送</label><select id="wechat"><option value="none">暂不启用</option><option value="clawbot">微信 ClawBot（本机 OpenClaw）</option><option value="serverchan">Server酱 Turbo（旧渠道）</option><option value="pushplus">PushPlus（旧渠道）</option></select>
+          <div id="token-box" hidden><label for="token" id="token-label">推送密钥</label><input id="token" type="password" autocomplete="off" spellcheck="false" placeholder="粘贴密钥，仅保存在本机"><p id="provider-hint" class="muted">已存密钥时，留空会保留原值。</p><p><a id="provider-link" target="_blank" rel="noreferrer">获取个人推送密钥 ↗</a></p></div>
+          <p id="clawbot-status" class="muted" hidden></p>
+          <button id="retry-wechat" type="button" class="secondary" hidden>重试微信待发消息</button>
+          <button type="submit" class="full">保存通知设置</button>
+          <div class="buttons test-buttons"><button id="test-desktop" type="button" class="secondary">测试本机通知</button><button id="test-wechat" type="button" class="secondary">测试微信</button></div>
+        </form>
+        <section class="note"><strong>运行条件</strong><p>浏览器保持运行，电脑保持唤醒。各关键词按自己的间隔检查；浏览器或网络繁忙时可能延迟。</p><p>只操作扩展自己创建的后台标签，不刷新你正在看的页面。加载失败会保留旧基线并重试。</p><p>每个关键词分别累计连续异常，超过 5 次提醒一次，成功检查后重新计数。</p><p>搜索索引延迟、大量瞬时上新和页面变动仍可能造成漏报。</p></section>
+      </aside>
+    </div>
+    <footer>数据与密钥仅保存在本机扩展存储。首次运行、更改关键词后重新建立基线。</footer>
+  </main>
+  <script type="module" src="dashboard.js"></script>
+</body>
+</html>

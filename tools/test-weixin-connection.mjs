@@ -1,0 +1,10 @@
+import { randomUUID } from "node:crypto";
+import { discover, setEnvironment } from "../bridge/discover.mjs";
+import { createWeixin } from "../bridge/weixin.mjs";
+const config = await discover();
+setEnvironment(config.stateDir);
+const weixin = await createWeixin(config);
+if (!(await weixin.status()).contextReady) await weixin.pollOnce();
+if (!(await weixin.status()).contextReady) throw new Error("尚未收到手机发给 ClawBot 的消息，请稍后重试");
+await weixin.send("【Mercari 上新提醒】微信 ClawBot 连接测试成功。这是一条测试消息，不代表发现新商品。", `mercari-test-${randomUUID()}`);
+console.log(JSON.stringify({ ok: true, contextReady: true, messageAccepted: true }));
