@@ -88,7 +88,7 @@ export async function createWeixin(config, dependencies = {}) {
   async function pollOnce(signal) {
     // If the full Gateway owns getUpdates, use its persisted context instead.
     // This small notification bridge never dispatches inbound text to an LLM.
-    if (await (dependencies.gatewayOnline || gatewayOnline)(config.gatewayPort)) { mode = "gateway"; return; }
+    if (!config.forceDirect && await (dependencies.gatewayOnline || gatewayOnline)(config.gatewayPort)) { mode = "gateway"; return; }
     mode = "direct";
     const response = await api.getUpdates({ ...await credentials(),
       get_updates_buf: sync.loadGetUpdatesBuf(syncFile) || "", timeoutMs: 35000, abortSignal: signal });

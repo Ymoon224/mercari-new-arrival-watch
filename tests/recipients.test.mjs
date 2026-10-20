@@ -89,6 +89,37 @@ test("the original recipient keeps its queue, and private administration require
 });
 function configToken(f) { return f.config.token; }
 
+test("failed startup deletion recovery closes all previously started queues and waits for polling shutdown", async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "mercari-recovery-leak-test-"));
+  assert.equal(path.dirname(root), path.resolve(os.tmpdir()));
+  const directory = path.join(root, "bridge"), registryFile = path.join(directory, "recipients.json");
+  let queueClosed = false, pollingClosed = false, releasePolling;
+  t.after(async () => { releasePolling?.(); await fs.rm(root, { recursive: true, force: true }); });
+  const config = { token: "a".repeat(64), accountId: "owner-bot", target: "owner@im.wechat", stateDir: path.join(root, "state") };
+  await writeJson(registryFile, { schemaVersion: 1,
+    recipients: [{ id: "owner", accountId: config.accountId, target: config.target, name: "我的微信", enabled: true }],
+    deleted: [{ id: "removed", accountId: "removed-bot", target: "removed@im.wechat", name: "旧用户", enabled: true,
+      deletedAt: Date.now(), credentialHash: "", cleanupPending: true, noticeState: "not-requested" }] });
+  await assert.rejects(createRecipientHub({ config, directory, listen: false,
+    transportFactory: async () => ({
+      monitor: signal => new Promise(resolve => {
+        releasePolling = resolve;
+        signal.addEventListener("abort", () => setTimeout(() => { pollingClosed = true; resolve(); }, 5), { once: true });
+      }),
+      disconnect: async () => {
+        // Fail the final registry rename after runtimes have already started,
+        // without platform-specific permission changes or touching real state.
+        await fs.rename(registryFile, `${registryFile}.original`);
+        await fs.mkdir(registryFile);
+        return { remoteStopped: false, localCredentialsRemoved: true };
+      }
+    }),
+    queueFactory: async () => ({ close: async () => { queueClosed = true; } })
+  }));
+  assert.equal(queueClosed, true);
+  assert.equal(pollingClosed, true, "constructor rejection must wait for all active pollers to stop");
+});
+
 test("newly bound accounts receive nothing until explicitly selected, and invalid fan-out cannot send a partial notification", async t => {
   const f = await fixture(t); const bob = await f.addBob();
   await f.hub.accept(sample); // Old extensions and queued events target only owner.

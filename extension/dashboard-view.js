@@ -1,4 +1,11 @@
+import { remotePermission, qrPresentation } from "./remote.js";
+import QRCode from "./qr-code.js";
 const $ = id => document.getElementById(id);
+let executionMode = "local";
+let controller = { mode: "local" };
+let connectionLoaded = false;
+let qrSession = null;
+let qrPolling = false;
 let settings = null;
 let monitors = [];
 let recipients = [];
@@ -76,6 +83,7 @@ function renderEditor() {
   editorLoadedKey = key;
   $("editor-title").textContent = isNew ? "添加关键词" : "当前关键词设置";
   $("keyword").value = isNew ? "" : selected.keyword;
+  $("blocked-words").value = isNew ? "" : (selected.blockedWords || []).join("\n");
   $("interval-minutes").value = isNew ? 1 : selected.intervalMinutes;
   $("scan-count").value = isNew ? 20 : selected.scanCount;
   $("monitor-enabled").checked = isNew ? true : selected.enabled;
@@ -132,17 +140,17 @@ function renderRecipients(error) {
     save.setAttribute("aria-label", `保存用户 ${row.name}`);
     save.addEventListener("click", () => action(async () => {
       await request({ type: "save-recipient", recipient: { id: row.id, name: name.value, enabled: enabled.checked } });
-      recipientDrafts.delete(row.id); feedback("用户备注和接收开关已保存。关键词设置权限仍只在本机。");
+      recipientDrafts.delete(row.id); feedback("用户备注和接收开关已保存。关键词设置权限仍只属于管理员。");
     }));
     const remove = document.createElement("button"); remove.type = "button"; remove.className = "secondary danger"; remove.textContent = "删除用户";
     remove.setAttribute("aria-label", `删除用户 ${row.name}`);
     remove.addEventListener("click", () => action(async () => {
       const notice = notify.checked ? "将尝试发送停用通知，会话失效或次数用尽时可能无法送达。" : "不会发送停用通知。";
-      if (!confirm(`删除微信用户“${row.name}”？\n\n将停止本机推送、移除相关任务接收人，并停止发送该用户的待发消息。已发送的消息无法撤回，其他用户不受影响。\n${notice}\n本机删除不保证清除微信客户端显示的绑定。`)) return;
+      if (!confirm(`删除微信用户“${row.name}”？\n\n将停止${executionMode === "remote" ? "服务器" : "本机"}推送、移除相关任务接收人，并停止发送该用户的待发消息。已发送的消息无法撤回，其他用户不受影响。\n${notice}\n删除不保证清除微信客户端显示的绑定。`)) return;
       const result = await request({ type: "delete-recipient", recipient: { id: row.id, confirmName: row.name, notifyBeforeDelete: notify.checked } });
       recipientDrafts.delete(row.id); recipientChoiceKey = null; editorLoadedKey = null;
       const outcome = result.noticeState === "accepted" ? "停用通知已被微信接口接受，请以手机实际显示为准。" : result.noticeState === "failed" ? "停用通知未发送成功。" : result.noticeState === "not-requested" ? "未发送停用通知。" : "停用通知结果未确认，不会重复发送。";
-      feedback(`已删除“${row.name}”，本机连接和推送已停止。${outcome}${result.cleanupWarning || ""}`, Boolean(result.cleanupWarning));
+      feedback(`已删除“${row.name}”，连接和推送已停止。${outcome}${result.cleanupWarning || ""}`, Boolean(result.cleanupWarning));
     }));
     const actions = document.createElement("div"); actions.className = "buttons recipient-actions"; actions.append(save, remove);
     box.append(name, enabledLabel, actions, status, notifyLabel); $("recipient-list").append(box);
@@ -190,7 +198,11 @@ function renderState(state) {
 }
 async function refresh() {
   const result = await request({ type: "status", monitorId: selectedId });
-  if (result.version !== "1.3.2" || !Array.isArray(result.monitors)) throw new Error("扩展后台仍是旧版，请在扩展管理页重新加载插件，再关闭旧面板重新打开。新版页眉应显示 v1.3.2。");
+  if (result.version !== "2.0.0" || !Array.isArray(result.monitors)) throw new Error("扩展后台仍是旧版，请在扩展管理页重新加载插件，再关闭旧面板重新打开。新版页眉应显示 v2.0.0。");
+  executionMode = result.executionMode || "local"; controller = result.controller || { mode: executionMode };
+  renderConnection();
+  $("server-state").hidden = executionMode !== "remote" || !result.server;
+  if (result.server) $("server-state").textContent = result.server.storageError || `服务${result.server.running ? "运行中" : "已停止"} · 当前采集 ${result.server.activeRequests || 0} 项 · 已启用 ${result.monitors.filter(item => item.enabled).length} 项`;
   settings = result.settings; monitors = result.monitors;
   recipients = Array.isArray(result.recipients) ? result.recipients : [];
   recipientsKnown = settings.wechat === "clawbot" && !result.recipientsError && Array.isArray(result.recipients);
@@ -205,6 +217,7 @@ async function refresh() {
   const failed = monitors.filter(item => item.enabled && item.lastError).length;
   $("status").textContent = failed ? `${failed} 项异常` : enabled ? `${enabled} 项监控中` : "已暂停";
   $("status").className = `pill ${failed ? "error" : enabled ? "running" : ""}`;
+  if (executionMode === "local" && controller.localSuspended) { $("status").textContent = "本机采集待启用"; $("status").className = "pill"; }
   renderMonitors(); renderEditor(); renderState(result.state);
   renderRecipients(result.recipientsError);
   $("clawbot-status").hidden = settings.wechat !== "clawbot";
@@ -213,11 +226,39 @@ async function refresh() {
   const deliveryError = bridge?.error || (bridge?.needsLogin ? "微信登录已失效，请重新扫码" : bridge?.quotaReached ? "本次微信会话推送次数已用尽，请回复“继续提醒”后自动补发" : bridge?.needsInteraction ? "请在手机微信给 ClawBot 发一条新消息，以刷新发送会话" : "");
   $("delivery-warning").hidden = settings.wechat !== "clawbot" || !deliveryError;
   const affected = bridge?.multiRecipient ? recipients.filter(row => row.enabled && row.pending > 0 && (row.needsLogin || row.needsInteraction || row.error)) : [];
-  $("delivery-warning").textContent = affected.length ? `以下接收人需要处理：${affected.map(row => `“${row.name}”（${row.needsLogin ? "微信登录失效" : row.quotaReached ? "次数已用尽" : "会话或发送异常"}，待发 ${row.pending} 批）`).join("；")}。其他接收人仍独立发送，不会因此暂停。` : deliveryError ? `微信接收状态需要处理：${deliveryError}${bridge?.pending ? `。${bridge.pending} 批消息保存在本机等待补发。` : ""}` : "";
+  $("delivery-warning").textContent = affected.length ? `以下接收人需要处理：${affected.map(row => `“${row.name}”（${row.needsLogin ? "微信登录失效" : row.quotaReached ? "次数已用尽" : "会话或发送异常"}，待发 ${row.pending} 批）`).join("；")}。其他接收人仍独立发送，不会因此暂停。` : deliveryError ? `微信接收状态需要处理：${deliveryError}${bridge?.pending ? `。${bridge.pending} 批消息保存在${executionMode === "remote" ? "服务器" : "本机"}等待补发。` : ""}` : "";
   if (bridge) {
     const connection = bridge.multiRecipient && recipients.length ? `${recipients.filter(row => row.enabled && row.contextReady).length}/${recipients.filter(row => row.enabled).length} 位接收人会话可用，各自独立发送` : bridge.needsLogin ? "微信需要重新登录" : bridge.quotaReached ? "本次微信会话推送次数已用尽" : bridge.needsInteraction ? "微信发送受限，请发一条新消息" : bridge.verified ? "最近发送请求已被微信接受" : bridge.contextReady ? "已保存会话，当前投递待验证" : "尚未取得微信会话";
-    $("clawbot-status").textContent = bridge.connected ? `${connection} · 本机待发 ${bridge.pending} 批 · 微信接口已接收 ${bridge.delivered} 批` : bridge.error;
+    $("clawbot-status").textContent = bridge.connected ? `${connection} · ${executionMode === "remote" ? "服务器" : "本机"}待发 ${bridge.pending} 批 · 微信接口已接收 ${bridge.delivered} 批` : bridge.error;
   }
+}
+function renderConnection() {
+  const remote = executionMode === "remote";
+  if (!connectionLoaded) {
+    $("execution-mode").value = executionMode; $("server-url").value = controller.baseUrl || "";
+    $("server-token").placeholder = controller.hasToken ? "已保存；留空保留原密钥" : "粘贴服务器生成的管理员密钥";
+    connectionLoaded = true; connectionFields();
+  }
+  $("execution-label").textContent = remote ? "远端采集 · 本机不访问 Mercari" : "本机浏览器采集";
+  $("connection-state").textContent = remote ? controller.baseUrl ? `已连接 ${controller.baseUrl}。断开此面板连接不会暂停服务器，请先使用“暂停全部采集”。` : "尚未连接服务器。本机采集保持暂停。" : controller.localSuspended ? "本机配置已保留，采集尚未恢复。确认远端已暂停后，点击“启用本机采集”。" : "本机模式：浏览器关闭后停止采集。";
+  $("disconnect-server").hidden = !remote || !controller.baseUrl;
+  $("activate-local").hidden = remote || !controller.localSuspended;
+  $("local-notification-fields").hidden = remote; $("save-notification").hidden = remote;
+  $("test-desktop").hidden = remote; $("add-recipient").hidden = !remote;
+  $("notification-hint").textContent = remote ? "微信绑定和投递由服务器管理；本机只保存管理地址及管理员密钥。" : "共用本机转发连接；每条任务单独选择微信接收人，只有管理员可修改。";
+  $("add-recipient-hint").textContent = remote ? "点击“扫码添加接收人”，让新用户用微信扫描二维码。服务器保存登录；绑定完成后请在任务中选择接收人。" : "先运行本机“添加微信接收人.cmd”，让新用户扫码，再点“同步已绑定用户”。新用户不会自动订阅已有任务。";
+  $("runtime-hint").textContent = remote ? "服务器独立运行采集和推送，本机浏览器和电脑均可关闭。只有修改设置或查看状态时需要打开本面板。" : "浏览器保持运行，电脑保持唤醒。本机只操作扩展自己创建的采集标签。";
+}
+function connectionFields() { const remote = $("execution-mode").value === "remote"; $("remote-fields").hidden = !remote; $("connect-server").textContent = remote ? "连接服务器" : "切换到本机模式"; }
+async function renderQr(session) {
+  qrSession = session; $("qr-box").hidden = false;
+  const view = qrPresentation(session);
+  $("qr-status").textContent = view.message;
+  $("qr-image").hidden = !view.showQr;
+  if (!$("qr-image").hidden) $("qr-image").src = await QRCode.toDataURL(String(session.qrUrl), { width: 240, margin: 3, errorCorrectionLevel: "M" });
+  else $("qr-image").removeAttribute("src");
+  $("qr-verify-form").hidden = !view.verify;
+  $("qr-cancel").hidden = !view.active;
 }
 async function action(fn) {
   if (busy) return;
@@ -232,13 +273,14 @@ $("monitor-form").addEventListener("submit", event => {
   action(async () => {
     const result = await request({ type: "save-monitor", monitor: { id: editingNew || !selected ? undefined : selected.id,
       keyword: $("keyword").value, intervalMinutes: Number($("interval-minutes").value), scanCount: Number($("scan-count").value), enabled: $("monitor-enabled").checked,
+      blockedWords: $("blocked-words").value.split(/\r?\n/).map(word => word.trim()).filter(Boolean),
       recipientIds: [...$("monitor-recipients").querySelectorAll("input:checked")].map(input => input.value) } });
     selectedId = result.monitorId; editingNew = false; editorLoadedKey = null; recipientChoiceKey = null;
     feedback("关键词配置已保存。新增或更改关键词后，首轮只建立基线；调整间隔会保留上一轮结果。");
   });
 });
 $("delete-monitor").addEventListener("click", () => action(async () => {
-  if (!selected || !confirm(`删除“${selected.keyword}”及其本机历史记录？`)) return;
+  if (!selected || !confirm(`删除“${selected.keyword}”及其${executionMode === "remote" ? "服务器" : "本机"}历史记录？`)) return;
   await request({ type: "delete-monitor", monitorId: selectedId });
   selectedId = null; editorLoadedKey = null; editingNew = false; feedback("该关键词已删除，其他关键词保持不变。");
 }));
@@ -257,9 +299,36 @@ $("settings-form").addEventListener("submit", event => {
 $("toggle").addEventListener("click", () => action(async () => { await request({ type: "toggle", monitorId: selectedId }); editorLoadedKey = null; feedback("当前关键词的监控状态已更新。"); }));
 $("check").addEventListener("click", () => action(async () => { await request({ type: "check", monitorId: selectedId }); feedback("已请求检查此关键词；繁忙时等待其他检查完成。"); }));
 $("test-desktop").addEventListener("click", () => action(async () => { await request({ type: "test-notification", channel: "desktop", monitorId: selectedId }); feedback("已请求显示本机测试通知。"); }));
-$("test-wechat").addEventListener("click", () => action(async () => { await request({ type: "test-notification", channel: settings.wechat, monitorId: selectedId }); feedback(settings.wechat === "clawbot" ? "本机服务已保存测试消息，正在通过 ClawBot 发送；请在微信确认收到。" : "推送服务已接受测试消息，请在微信确认收到。"); }));
+$("test-wechat").addEventListener("click", () => action(async () => { await request({ type: "test-notification", channel: settings.wechat, monitorId: selectedId }); feedback(settings.wechat === "clawbot" ? `${executionMode === "remote" ? "服务器" : "本机服务"}已保存测试消息，正在通过 ClawBot 发送；请在微信确认收到。` : "推送服务已接受测试消息，请在微信确认收到。"); }));
 $("retry-wechat").addEventListener("click", () => action(async () => { const result = await request({ type: "retry-wechat" }); feedback(`已请求重试 ${result.pending} 批微信待发消息。若提示发送受限，请先在手机微信给 ClawBot 发一条新消息。`); }));
 $("clear-pending").addEventListener("click", () => action(async () => { await request({ type: "clear-pending", monitorId: selectedId }); feedback("当前关键词的待发消息已清除，商品历史和其他关键词保留。"); }));
 $("sync-recipients").addEventListener("click", () => action(async () => { const result = await request({ type: "sync-recipients" }); feedback(`已同步接收人，新增 ${result.imported || 0} 位。请为对应任务勾选接收人并保存，新用户不会自动收到已有任务。`); }));
-refresh().catch(error => feedback(error.message, true));
+$("execution-mode").addEventListener("change", connectionFields);
+$("connection-form").addEventListener("submit", event => {
+  event.preventDefault();
+  const remote = $("execution-mode").value === "remote";
+  let permission;
+  try { permission = remote ? chrome.permissions.request({ origins: [remotePermission($("server-url").value)] }) : Promise.resolve(true); }
+  catch (error) { feedback(error.message, true); return; }
+  action(async () => {
+    if (!await permission) throw new Error("未允许访问服务器，连接未保存");
+    if (!remote && !confirm("切换到本机模式？远端任务会继续运行，切换不会自动暂停远端。本机配置会保留，采集需要另行启用。")) return;
+    await request(remote ? { type: "connect-remote", baseUrl: $("server-url").value, token: $("server-token").value } : { type: "switch-local" });
+    $("server-token").value = ""; connectionLoaded = false; notificationsLoaded = false; editorLoadedKey = null; recipientChoiceKey = null; selectedId = null; editingNew = false; qrSession = null; $("qr-box").hidden = true;
+    feedback(remote ? "已连接服务器，本机采集和本机待发重试已停止。原本机配置保留，未自动上传。" : "已切换本机模式，采集尚未恢复。");
+  });
+});
+$("disconnect-server").addEventListener("click", () => action(async () => { if (!confirm("移除本机保存的服务器地址和管理密钥？服务器上的采集仍会继续，需暂停请先取消并使用“暂停全部采集”。")) return; await request({ type: "disconnect-remote" }); connectionLoaded = false; editorLoadedKey = null; selectedId = null; qrSession = null; $("qr-box").hidden = true; feedback("已移除本机连接；远端任务状态未变。本机不恢复采集。"); }));
+$("activate-local").addEventListener("click", () => action(async () => { if (!confirm("确认远端监控已暂停？启用本机可能与仍运行的远端任务重复推送。")) return; await request({ type: "activate-local" }); feedback("本机采集已启用。"); }));
+$("pause-all").addEventListener("click", () => action(async () => { await request({ type: "pause-all" }); editorLoadedKey = null; feedback("全部采集已暂停，不再发起 Mercari 采集请求。微信待发消息独立处理。"); }));
+$("start-all").addEventListener("click", () => action(async () => { await request({ type: "start-all" }); editorLoadedKey = null; feedback("全部关键词已开始采集。"); }));
+$("add-recipient").addEventListener("click", () => action(async () => { await renderQr(await request({ type: "qr-start" })); }));
+$("qr-cancel").addEventListener("click", () => action(async () => { if (qrSession) await renderQr(await request({ type: "qr-cancel", id: qrSession.id })); }));
+$("qr-verify-form").addEventListener("submit", event => { event.preventDefault(); action(async () => { if (qrSession) await renderQr(await request({ type: "qr-verify", id: qrSession.id, code: $("qr-code-input").value })); $("qr-code-input").value = ""; }); });
+async function initialize() { controller = await request({ type: "controller-status" }) || controller; executionMode = controller.mode || "local"; renderConnection(); await refresh(); }
+initialize().catch(error => feedback(error.message, true));
 setInterval(() => { if (!busy) refresh().catch(error => feedback(error.message, true)); }, 3000);
+setInterval(async () => {
+  if (busy || qrPolling || executionMode !== "remote" || !qrSession || !qrPresentation(qrSession).active) return;
+  qrPolling = true; try { const session = await request({ type: "qr-status", id: qrSession.id }); await renderQr(session); if (qrPresentation(session).connected) { recipientChoiceKey = null; await refresh(); } } catch (error) { $("qr-status").textContent = error.message; } finally { qrPolling = false; }
+}, 2500);

@@ -13,7 +13,10 @@ export function validateMonitor(input, old = {}) {
   if (!Number.isInteger(intervalMinutes) || intervalMinutes < 1 || intervalMinutes > 1440) throw new Error("检查间隔需为 1–1440 的整数，单位为分钟");
   const recipientIds = input.recipientIds ?? old.recipientIds ?? ["owner"];
   if (!Array.isArray(recipientIds) || recipientIds.length > 20 || recipientIds.some(id => typeof id !== "string" || !/^[a-zA-Z0-9_-]{1,80}$/.test(id))) throw new Error("微信接收人选择不正确");
+  const blockedWords = input.blockedWords ?? old.blockedWords ?? [];
+  if (!Array.isArray(blockedWords) || blockedWords.length > 100 || blockedWords.some(word => typeof word !== "string" || !word.trim() || word.trim().length > 100)) throw new Error("屏蔽词最多 100 个，每个需为 1–100 个字符");
   return { id: old.id || `watch-${crypto.randomUUID()}`, keyword, scanCount, intervalMinutes,
+    blockedWords: [...new Set(blockedWords.map(word => word.trim()))],
     recipientIds: [...new Set(recipientIds)],
     enabled: Boolean(input.enabled ?? old.enabled ?? true) };
 }

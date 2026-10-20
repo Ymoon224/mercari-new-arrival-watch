@@ -10,7 +10,7 @@
   window.chrome = { permissions: { request: async () => true }, runtime: { sendMessage: async message => {
     if (message.type === "status") {
       const selected = demo.monitors.find(item => item.id === message.monitorId) || demo.monitors[0];
-      return structuredClone({ version: "1.3.2", recipients: [{ id: "owner", name: "我的微信", enabled: true }], settings: demo.settings, monitors: demo.monitors, selectedId: selected?.id || null,
+      return structuredClone({ version: "2.0.0", recipients: [{ id: "owner", name: "我的微信", enabled: true }], settings: demo.settings, monitors: demo.monitors, selectedId: selected?.id || null,
         state: selected ? demo.states[selected.id] : null,
         bridge: demo.settings.wechat === "clawbot" ? { connected: false, error: "界面预览，不连接真实微信" } : null });
     }

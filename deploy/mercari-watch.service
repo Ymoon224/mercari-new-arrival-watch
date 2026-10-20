@@ -1,0 +1,27 @@
+[Unit]
+Description=Mercari remote monitor and Weixin notifications
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=mercari
+Group=mercari
+WorkingDirectory=/opt/mercari-watch/current
+EnvironmentFile=/etc/mercari-watch.env
+ExecStart=/usr/bin/node /opt/mercari-watch/current/server/main.mjs
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=120
+KillSignal=SIGTERM
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/mercari-watch
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

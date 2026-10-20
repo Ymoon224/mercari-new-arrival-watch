@@ -17,11 +17,11 @@ export function recipientIds(input) {
 
 // This registry has no chat-command entry point. Only the authenticated local
 // administrator can import accounts, rename recipients, or pause delivery.
-export async function createRecipientHub({ config, directory, port = config.port, transportFactory = createWeixin, queueFactory = createBridge }) {
+export async function createRecipientHub({ config, directory, port = config.port, transportFactory = createWeixin, queueFactory = createBridge, listen = true, allowEmpty = false }) {
   const registryFile = path.join(directory, "recipients.json");
   let registry = await readJson(registryFile, null);
   if (registry === null) {
-    registry = { schemaVersion: 1, recipients: [{ id: OWNER, accountId: config.accountId,
+    registry = { schemaVersion: 1, recipients: allowEmpty && !(config.accountId && config.target) ? [] : [{ id: OWNER, accountId: config.accountId,
       target: config.target, name: "我的微信", enabled: true }] };
     await writeJson(registryFile, registry);
   }
@@ -33,11 +33,15 @@ export async function createRecipientHub({ config, directory, port = config.port
       new Set(registry.recipients.map(row => row.id)).size !== registry.recipients.length ||
       new Set(registry.recipients.map(row => row.accountId)).size !== registry.recipients.length ||
       new Set(registry.recipients.map(row => row.target)).size !== registry.recipients.length ||
-      ![...registry.recipients, ...registry.deleted].some(row => row.id === OWNER && row.accountId === config.accountId && row.target === config.target)) {
+      !allowEmpty && ![...registry.recipients, ...registry.deleted].some(row => row.id === OWNER && row.accountId === config.accountId && row.target === config.target)) {
     throw new Error("接收人配置不正确，请保留原文件后检查");
   }
   const runtimes = new Map(); const controller = new AbortController();
   let chain = Promise.resolve(); let stopped = false;
+  async function closeRuntimes() {
+    controller.abort();
+    await Promise.allSettled([...runtimes.values()].flatMap(runtime => [Promise.resolve().then(() => runtime.queue.close()), runtime.polling]));
+  }
   const exclusive = fn => { const task = chain.then(fn); chain = task.catch(() => {}); return task; };
   function queueFile(row) { return row.id === OWNER ? path.join(directory, "deliveries.json") : path.join(directory, "queues", `${row.id}.json`); }
   function rowById(id) { return registry.recipients.find(row => row.id === id); }
@@ -59,7 +63,7 @@ export async function createRecipientHub({ config, directory, port = config.port
     runtimes.set(row.id, { queue, transport, polling, controller: localController });
   }
   try { for (const row of registry.recipients) await start(row); }
-  catch (error) { controller.abort(); await Promise.allSettled([...runtimes.values()].map(runtime => runtime.queue.close())); throw error; }
+  catch (error) { await closeRuntimes(); throw error; }
   async function list() {
     return Promise.all(registry.recipients.map(async row => {
       const health = await runtimes.get(row.id).queue.health();
@@ -167,7 +171,8 @@ export async function createRecipientHub({ config, directory, port = config.port
   }
   // Recover an interrupted deletion before accepting any new requests. Revoked
   // rows are never started as receiving accounts, even if credential cleanup fails.
-  for (const row of [...registry.deleted]) if (row.cleanupPending) await cleanupDeleted(row);
+  try { for (const row of [...registry.deleted]) if (row.cleanupPending) await cleanupDeleted(row); }
+  catch (error) { await closeRuntimes(); throw error; }
   const responseList = async extra => ({ ok: true, recipients: await list(), deletedRecipientIds: deletedIds(),
     cleanupWarnings: registry.deleted.filter(row => row.cleanupPending).map(row => ({ id: row.id, name: row.name, message: row.cleanupError || "推送资格已撤销，本机登录清理待完成" })), ...extra });
   async function admin(route, input) {
@@ -212,12 +217,12 @@ export async function createRecipientHub({ config, directory, port = config.port
     return { ok: true, accepted: true, pending: results.reduce((total, result) => total + result.pending, 0) };
   };
   let server;
-  try { server = await createEndpoint({ token: config.token, accept, health, retryPending, admin, port }); }
+  try { server = listen ? await createEndpoint({ token: config.token, accept, health, retryPending, admin, port }) : null; }
   catch (error) {
-    controller.abort(); await Promise.allSettled([...runtimes.values()].map(async runtime => { await runtime.queue.close(); await runtime.polling; })); throw error;
+    await closeRuntimes(); throw error;
   }
   return { server, accept, health, admin, retryPending, close: async () => {
-    stopped = true; controller.abort(); await new Promise(resolve => server.close(resolve)); await chain;
+    stopped = true; controller.abort(); if (server) await new Promise(resolve => server.close(resolve)); await chain;
     await Promise.all([...runtimes.values()].map(async runtime => { await runtime.queue.close(); await runtime.polling; }));
   } };
 }

@@ -82,7 +82,9 @@
     // matching Shop titles/prices never suppress a newly entering listing.
     const oldKeys = new Set(state.lastWindow?.length ? state.lastWindow : state.top.map(item => item.key));
     const gap = wasInitialized && !window.some(item => oldKeys.has(item.key));
-    const fresh = wasInitialized ? window.filter(item => !oldKeys.has(item.key)) : [];
+    const normalizeText = text => String(text).normalize("NFKC").toLowerCase();
+    const blockedWords = (settings.blockedWords || []).map(word => normalizeText(word.trim())).filter(Boolean);
+    const fresh = wasInitialized ? window.filter(item => !oldKeys.has(item.key) && !blockedWords.some(word => normalizeText(item.title).includes(word))) : [];
     delete state.seen; delete state.shopSeen; delete state.suppressedSimilar;
     const top = window.slice(0, 5);
     const topChanged = !sameSet(state.top.map(i => i.key), top.map(i => i.key));

@@ -3,12 +3,12 @@ export const origins = {
   serverchan: "https://sctapi.ftqq.com/*",
   pushplus: "https://www.pushplus.plus/*"
 };
-export function messageFor(event, keyword) {
+export function messageFor(event, keyword, { timeZone, remote = false } = {}) {
   if (event.type === "monitor-error") {
-    const formatTime = value => value == null ? "尚无成功记录" : new Date(value).toLocaleString("zh-CN", { hour12: false });
+    const formatTime = value => value == null ? "尚无成功记录" : new Date(value).toLocaleString("zh-CN", { hour12: false, ...(timeZone ? { timeZone } : {}) });
     const title = `${event.keyword || keyword}：监控连续异常 ${event.failures} 次`;
     const text = [`截至 ${formatTime(event.time)}，监控已连续失败 ${event.failures} 次，暂时无法确认是否有上新。`,
-      "请检查电脑网络是否正常，并打开 Mercari 搜索页查看是否出现验证或加载异常。",
+      remote ? "请检查服务器网络和监控状态，确认 Mercari 是否出现访问限制或加载异常。" : "请检查电脑网络是否正常，并打开 Mercari 搜索页查看是否出现验证或加载异常。",
       `最近错误：${event.error}`, `上次成功：${formatTime(event.lastSuccess)}`,
       `查看搜索结果：${event.url}`, "程序会继续重试。如消息延迟送达，请以提醒面板的当前状态为准。"].join("\n\n");
     return { title, text, markdown: text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;") };

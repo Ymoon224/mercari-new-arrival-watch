@@ -14,7 +14,7 @@ test("upgrade removes historical suppression and preserves the last window, cred
   const snapshot = structuredClone(saved);
   const converted = migrate(saved);
   assert.equal(converted.schemaVersion, 2);
-  assert.deepEqual(converted.monitors[0], { id: "watch-legacy", keyword: "潔世一", scanCount: 5, enabled: true, intervalMinutes: 1, recipientIds: ["owner"] });
+  assert.deepEqual(converted.monitors[0], { id: "watch-legacy", keyword: "潔世一", scanCount: 5, enabled: true, intervalMinutes: 1, recipientIds: ["owner"], blockedWords: [] });
   assert.deepEqual(converted.settings, { desktop: false, wechat: "clawbot", token: "a".repeat(64) });
   assert.deepEqual(converted.states["watch-legacy"].lastWindow, state.lastWindow);
   for (const key of ["seen", "shopSeen", "suppressedSimilar"]) assert.equal(Object.hasOwn(converted.states["watch-legacy"], key), false);

@@ -61,6 +61,9 @@ test("monitor error alerts describe the outage and never claim new products were
   assert.ok(message.text.includes("页面加载超时"));
   assert.ok(message.text.includes("尚无成功记录"));
   assert.equal(message.title.includes("新出现的商品"), false);
+  const serverAlert = messageFor(alert, "different keyword", { remote: true, timeZone: "Asia/Shanghai" });
+  assert.ok(serverAlert.text.includes("请检查服务器网络"));
+  assert.ok(serverAlert.text.includes("2023/11/15 06:13:20"));
   let payload;
   await sendChannel("clawbot", alert, { keyword: "潔世一", wechat: "clawbot", token: "a".repeat(64) }, api,
     async (url, init) => { payload = JSON.parse(init.body); return { ok: true, json: async () => ({ ok: true, accepted: true }) }; });

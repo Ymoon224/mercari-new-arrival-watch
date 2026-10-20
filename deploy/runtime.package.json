@@ -1,0 +1,12 @@
+{
+  "name": "mercari-watch-weixin-runtime",
+  "version": "2.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Install separately from the checkout; server-only official Weixin runtime",
+  "engines": { "node": ">=24.16.0 <25" },
+  "dependencies": {
+    "@tencent-weixin/openclaw-weixin": "2.4.10",
+    "openclaw": "2026.10.4"
+  }
+}

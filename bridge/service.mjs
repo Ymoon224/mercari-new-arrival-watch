@@ -45,7 +45,7 @@ function setupPage(token, nonce) {
 }
 
 export async function createBridge({ token, stateFile, send, status, port = 17869, clock = Date.now, listen = true }) {
-  if (!/^[a-f0-9]{64}$/.test(token)) throw new Error("本机连接密钥不正确");
+  if (!/^[a-fA-F0-9]{64}$/.test(token)) throw new Error("本机连接密钥不正确");
   let state = await readJson(stateFile, { records: [] });
   if (!Array.isArray(state.records)) throw new Error("转发队列文件损坏，请先保留该文件并检查");
   let chain = Promise.resolve();
@@ -169,7 +169,7 @@ export async function createBridge({ token, stateFile, send, status, port = 1786
 }
 
 export async function createEndpoint({ token, accept, health, retryPending, admin, port = 17869 }) {
-  if (!/^[a-f0-9]{64}$/.test(token)) throw new Error("本机连接密钥不正确");
+  if (!/^[a-fA-F0-9]{64}$/.test(token)) throw new Error("本机连接密钥不正确");
   const server = http.createServer(async (request, response) => {
     const origin = request.headers.origin;
     const host = request.headers.host;

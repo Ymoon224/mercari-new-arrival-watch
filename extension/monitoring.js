@@ -1,5 +1,6 @@
 import { sendChannel, origins, bridgeStatus, retryBridge, recipientAdmin } from "./notify.js";
 import { migrate, validateMonitor, duplicateKeyword, notificationSettings, settingsFor, dueMonitors, removeRecipientReferences, ALARM, MAX_MONITORS } from "./watches.js";
+import { REMOTE_KEY, readController, safeController, remoteUrl, remoteRequest } from "./remote.js";
 const W = globalThis.MercariWatch;
 let chain = Promise.resolve();
 const enqueue = fn => { const task = chain.then(fn); chain = task.catch(() => {}); return task; };
@@ -39,6 +40,8 @@ async function closeOwned(run) {
 async function reconcile(db) {
   await chrome.storage.local.setAccessLevel({ accessLevel: "TRUSTED_CONTEXTS" });
   await chrome.alarms.clear("mercari-check");
+  const controller = await readController();
+  if (controller.mode === "remote" || controller.localSuspended) { await chrome.alarms.clear(ALARM); return; }
   const needed = db.monitors.some(item => item.enabled || db.states[item.id].pending.length);
   const alarm = await chrome.alarms.get(ALARM);
   if (needed && !alarm) await chrome.alarms.create(ALARM, { delayInMinutes: 1, periodInMinutes: 1 });
@@ -61,6 +64,9 @@ async function drain(db) {
   }
 }
 async function tick(forceIds = []) {
+  await chrome.storage.local.setAccessLevel({ accessLevel: "TRUSTED_CONTEXTS" });
+  const controller = await readController();
+  if (controller.mode === "remote" || controller.localSuspended) { await suspendLocal(); return; }
   const db = await read();
   const now = Date.now();
   for (const monitor of db.monitors) {
@@ -106,6 +112,34 @@ function selectedMonitor(db, id) {
   return monitor;
 }
 async function handle(message, sender) {
+  const collector = ["collector-ready", "sample", "sample-error"].includes(message?.type);
+  if (!collector && !sender.url?.startsWith(chrome.runtime.getURL(""))) throw new Error("不允许来自网页的配置请求");
+  const controller = await readController();
+  if (message.type === "controller-status") return safeController(controller);
+  if (message.type === "connect-remote") {
+    const baseUrl = remoteUrl(message.baseUrl);
+    const token = String(message.token || (baseUrl === controller.baseUrl ? controller.token : "") || "").trim();
+    if (!/^[\x21-\x7e]{16,512}$/.test(token)) throw new Error("请填写服务器生成的完整管理员密钥");
+    const next = { mode: "remote", baseUrl, token, localSuspended: true };
+    const result = await remoteRequest(next, { type: "status" });
+    if (result.version !== "2.0.0" || result.executionMode !== "remote" || result.server?.collector !== "http" || !Array.isArray(result.monitors)) throw new Error("服务器版本或运行模式不兼容，需要 v2.0.0 远端 HTTP 采集服务");
+    await chrome.storage.local.set({ [REMOTE_KEY]: next });
+    await suspendLocal(); return { ok: true, ...safeController(next) };
+  }
+  if (message.type === "disconnect-remote" || message.type === "switch-local") {
+    const next = message.type === "switch-local" ? { ...controller, mode: "local", localSuspended: true } : { mode: "remote", localSuspended: true };
+    await chrome.storage.local.set({ [REMOTE_KEY]: next }); await suspendLocal(); return { ok: true, ...safeController(next) };
+  }
+  if (controller.mode === "remote") {
+    if (collector) return message.type === "collector-ready" ? {} : { ignored: true };
+    if (message.type === "status" && !controller.baseUrl) return { version: "2.0.0", executionMode: "remote", controller: safeController(controller), monitors: [], selectedId: null, state: null, recipients: [], settings: { desktop: false, wechat: "clawbot", hasToken: false }, bridge: null };
+    const result = await remoteRequest(controller, message);
+    return message.type === "status" ? { ...result, executionMode: "remote", controller: safeController(controller) } : result;
+  }
+  if (message.type === "activate-local") {
+    await chrome.storage.local.set({ [REMOTE_KEY]: { ...controller, localSuspended: false } }); await tick(); return { ok: true };
+  }
+  if (collector && controller.localSuspended) return message.type === "collector-ready" ? {} : { ignored: true };
   const db = await read();
   if (["collector-ready", "sample", "sample-error"].includes(message.type)) {
     const monitor = senderMonitor(db, sender);
@@ -140,11 +174,19 @@ async function handle(message, sender) {
       }
       catch (error) { recipientsError = error.message; }
     }
-    return { version: "1.3.2", recipients, recipientsError, settings: { ...safeSettings, hasToken: Boolean(token) }, selectedId: monitor?.id || null,
+    return { version: "2.0.0", executionMode: "local", controller: safeController(controller), recipients, recipientsError, settings: { ...safeSettings, hasToken: Boolean(token) }, selectedId: monitor?.id || null,
       monitors: db.monitors.map(item => { const state = db.states[item.id]; return { ...item,
         running: Boolean(state.run), lastSuccess: state.lastSuccess, lastError: state.lastError, failures: state.failures,
         nextCheckAt: state.nextCheckAt, pendingCount: state.pending.length }; }),
       state: monitor ? db.states[monitor.id] : null, bridge: db.settings.wechat === "clawbot" ? await bridgeStatus() : null };
+  }
+  if (message.type === "pause-all" || message.type === "start-all") {
+    const enabled = message.type === "start-all";
+    for (const monitor of db.monitors) { monitor.enabled = enabled; if (enabled) db.states[monitor.id].nextCheckAt = Date.now(); }
+    await save(db);
+    if (!enabled) await suspendLocal();
+    else await chrome.storage.local.set({ [REMOTE_KEY]: { ...controller, localSuspended: false } });
+    await tick(); return { ok: true };
   }
   if (message.type === "sync-recipients") return recipientAdmin(db.settings, "sync-recipients");
   if (message.type === "save-recipient") return recipientAdmin(db.settings, "save-recipient", message.recipient);
@@ -221,6 +263,13 @@ async function handle(message, sender) {
   }
   throw new Error("未知操作");
 }
+async function suspendLocal() {
+  await chrome.alarms.clear(ALARM); await chrome.alarms.clear("mercari-check");
+  const db = await read(); const runs = Object.values(db.states).map(state => state.run).filter(Boolean);
+  for (const state of Object.values(db.states)) state.run = null;
+  await save(db); for (const run of runs) await closeOwned(run);
+  await chrome.action.setBadgeText({ text: "" });
+}
 chrome.runtime.onMessage.addListener((message, sender, respond) => {
   enqueue(() => handle(message, sender)).then(respond, error => respond({ error: error.message })); return true;
 });
@@ -237,6 +286,7 @@ chrome.runtime.onStartup.addListener(() => enqueue(async () => {
 chrome.action.onClicked.addListener(() => chrome.runtime.openOptionsPage());
 chrome.notifications.onClicked.addListener(() => chrome.runtime.openOptionsPage());
 chrome.tabs.onRemoved.addListener(tabId => enqueue(async () => {
+  const controller = await readController(); if (controller.mode === "remote" || controller.localSuspended) return;
   const db = await read();
   const monitor = db.monitors.find(item => db.states[item.id].run?.tabId === tabId);
   if (!monitor) return;

@@ -67,6 +67,18 @@ test("other senders cannot refresh the scanner's session; an external Gateway co
   assert.ok(safeWeixinError(new Error("errcode=-2 secret")).includes("-2"));
 });
 
+test("remote direct polling ignores an unrelated Gateway port while legacy local behavior remains unchanged", async t => {
+  const f = await fixture(t); let probes = 0, updates = 0;
+  f.dependencies.gatewayOnline = async () => { probes++; return true; };
+  f.dependencies.api.getUpdates = async () => { updates++; return { msgs: [] }; };
+  const local = await f.start(); await local.pollOnce();
+  assert.equal(probes, 1); assert.equal(updates, 0); assert.equal((await local.status()).mode, "gateway");
+  f.config.forceDirect = true;
+  const remote = await f.start(); await remote.pollOnce();
+  assert.equal(probes, 1, "a remote relay must never yield to an unrelated listening port");
+  assert.equal(updates, 1); assert.equal((await remote.status()).mode, "direct");
+});
+
 test("the last session slot includes a renewal reminder; the counter persists and fresh inbound activity resets it", async t => {
   const f = await fixture(t); const transport = await f.start();
   for (let i = 0; i < 10; i++) await transport.send(`message ${i}`, `quota-${i}`);

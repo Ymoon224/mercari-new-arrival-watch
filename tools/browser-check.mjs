@@ -39,13 +39,26 @@ try {
       states: { "watch-a": empty("潔世一"), "watch-b": empty("凪誠士郎") }
     };
     demo.states["watch-a"].lastWindow = ["item:m123"];
-    window.__demo = demo; window.__requests = [];
+    window.__demo = demo; window.__requests = []; window.__controller = { mode: "local", localSuspended: false };
     window.__bridge = { connected: true, contextReady: true, verified: true, pending: 0, delivered: 1 };
     window.chrome = { permissions: { request: async () => true }, runtime: { sendMessage: async message => {
       window.__requests.push(message);
+      if (message.type === "controller-status") return window.__controller;
+      if (message.type === "connect-remote") {
+        window.__controller = { mode: "remote", baseUrl: message.baseUrl, hasToken: true, localSuspended: true };
+        demo.monitors = [{ id: "remote-a", keyword: "潔世一", blockedWords: ["全巻"], scanCount: 5, intervalMinutes: 3, recipientIds: ["remote-user"], enabled: true }];
+        demo.states = { "remote-a": empty("潔世一") }; demo.settings = { desktop: false, wechat: "clawbot", hasToken: true };
+        demo.recipients = [{ id: "remote-user", name: "服务器用户", enabled: true, contextReady: true, pending: 0, accepted: 2 }];
+        return { ok: true };
+      }
+      if (message.type === "pause-all" || message.type === "start-all") { demo.monitors.forEach(item => item.enabled = message.type === "start-all"); return { ok: true }; }
+      if (message.type === "qr-start") { window.__qr = { id: "qr-test", status: "wait", qrUrl: "https://liteapp.weixin.qq.com/q/only-local-test", message: "请使用接收人的微信扫码", expiresAt: Date.now() + 180000 }; return window.__qr; }
+      if (message.type === "qr-status") return window.__qr;
+      if (message.type === "qr-cancel") { window.__qr.status = "cancelled"; window.__qr.message = "扫码已取消"; return window.__qr; }
+      if (message.type === "qr-verify") { window.__qr.status = "connected"; window.__qr.message = "绑定完成"; return window.__qr; }
       if (message.type === "status") {
         const selected = demo.monitors.find(item => item.id === message.monitorId) || demo.monitors[0];
-        return structuredClone({ version: "1.3.2", recipients: demo.recipients, settings: demo.settings, monitors: demo.monitors, selectedId: selected?.id || null,
+        return structuredClone({ version: "2.0.0", executionMode: window.__controller.mode, controller: window.__controller, recipients: demo.recipients, settings: demo.settings, monitors: demo.monitors, selectedId: selected?.id || null,
           state: selected ? demo.states[selected.id] : null,
           bridge: demo.settings.wechat === "clawbot" ? window.__bridge : null });
       }
@@ -162,7 +175,38 @@ try {
   await page.locator("#new-monitor").click();
   assert.equal(await page.locator("#monitor-recipients input").count(), 0);
   assert.ok((await page.locator("#monitor-recipients").innerText()).includes("尚无接收人"));
+  await page.setViewportSize({ width: 1240, height: 1000 });
+  await page.locator("#execution-mode").selectOption("remote");
+  await page.locator("#server-url").fill("https://server.example.com");
+  await page.locator("#server-token").fill("b".repeat(64));
+  await page.locator("#connect-server").click();
+  await page.waitForFunction(() => document.querySelector("#execution-label").textContent.includes("远端采集"));
+  assert.equal(await page.locator("#server-token").inputValue(), "");
+  assert.equal(await page.locator("#local-notification-fields").isHidden(), true);
+  assert.equal(await page.locator("#blocked-words").inputValue(), "全巻");
+  await page.locator("#blocked-words").fill("全巻\nNovel");
+  await page.locator("#save-monitor").click();
+  assert.deepEqual(await page.evaluate(() => window.__requests.filter(row => row.type === "save-monitor").at(-1).monitor.blockedWords), ["全巻", "Novel"]);
+  await page.locator("#pause-all").click();
+  await page.waitForFunction(() => window.__demo.monitors.every(row => !row.enabled));
+  assert.ok((await page.locator("#feedback").innerText()).includes("不再发起 Mercari"));
+  await page.locator("#start-all").click();
+  await page.waitForFunction(() => window.__demo.monitors.every(row => row.enabled));
+  await page.locator("#add-recipient").click();
+  await page.waitForFunction(() => document.querySelector("#qr-image").src.startsWith("data:image/png"));
+  assert.equal(await page.locator("#qr-image").isVisible(), true);
+  await page.screenshot({ path: resolve(root, "artifacts/dashboard-remote.png"), fullPage: true });
+  await page.evaluate(() => { window.__qr.status = "need_verifycode"; window.__qr.message = "请填写手机显示的验证码"; });
+  await page.locator("#qr-verify-form").waitFor({ state: "visible" });
+  await page.locator("#qr-code-input").fill("123456");
+  await page.locator("#qr-verify-form button").click();
+  await page.waitForFunction(() => window.__requests.some(row => row.type === "qr-verify" && row.code === "123456"));
+  await page.waitForFunction(() => document.querySelector("#qr-status").textContent === "绑定完成");
+  assert.equal(await page.locator("#qr-image").getAttribute("src"), null);
+  await page.setViewportSize({ width: 420, height: 900 });
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+  await page.screenshot({ path: resolve(root, "artifacts/dashboard-remote-mobile.png"), fullPage: true });
   assert.deepEqual(errors, []);
-  console.log("Admin UI passed: recipient import, rename, allocation, delete confirmation/cancel, expired-session notice disabled, no rerouting, mobile layout.");
+  console.log("Admin UI passed: local controls; remote connection, blocked words, global pause/start, locally rendered QR, verification code, mobile layout.");
   console.log("Screenshots: artifacts/dashboard.png, artifacts/dashboard-mobile.png");
 } finally { await browser.close(); }

@@ -1,0 +1,15 @@
+# Replace this hostname and point its DNS to the server before starting Caddy.
+watch.example.com {
+    @service path /health /api/*
+    handle @service {
+        request_body {
+            max_size 1MB
+        }
+        reverse_proxy 127.0.0.1:17870 {
+            header_up X-Forwarded-Proto https
+        }
+    }
+    handle {
+        respond "Not found" 404
+    }
+}
