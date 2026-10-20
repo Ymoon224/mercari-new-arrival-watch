@@ -3,6 +3,7 @@ import path from "node:path";
 import net from "node:net";
 import { pathToFileURL } from "node:url";
 import { createHash } from "node:crypto";
+import { receiptFromResponse } from "./receipts.mjs";
 
 export async function readJson(file, fallback) {
   try { return JSON.parse((await fs.readFile(file, "utf8")).replace(/^\uFEFF/, "")); }
@@ -137,10 +138,12 @@ export async function createWeixin(config, dependencies = {}) {
         throw new Error(`ret=${response.errcode || response.ret}`);
       }
       // The official transport also accepts success responses with no ret field.
+      const receipt = receiptFromResponse(response, clientId);
       await updateHealth(previous => ({ lastAcceptedAt: Date.now(), acceptedContextHash: fingerprint,
         ...(previous.sessionRevision === revision ? { sessionAccepted: (previous.sessionAccepted || 0) + 1 } : {}),
-        rejectedContextHash: null, lastSendError: "", lastFailureCode: null })).catch(() => {});
-      return { accepted: true };
+        rejectedContextHash: null, lastSendError: "", lastFailureCode: null,
+        lastApiReceipt: receipt })).catch(() => {});
+      return { accepted: true, receipt };
     } catch (error) {
       const safeMessage = safeWeixinError(error);
       const code = String(error.message).match(/(?:ret|errcode)=(-?\d+)/)?.[1];

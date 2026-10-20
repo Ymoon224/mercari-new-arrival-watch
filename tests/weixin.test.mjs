@@ -67,6 +67,26 @@ test("other senders cannot refresh the scanner's session; an external Gateway co
   assert.ok(safeWeixinError(new Error("errcode=-2 secret")).includes("-2"));
 });
 
+test("accepted responses retain only safe receipt fields, including missing IDs, without claiming phone delivery", async t => {
+  const f = await fixture(t); const transport = await f.start();
+  f.response({ ret: 0, message_id: '18446744073709551615', context_token: 'private-response-context', extra: 'private-response-body' });
+  const first = await transport.send('message', 'receipt-1');
+  assert.equal(first.accepted, true);
+  assert.equal(first.receipt.serverMessageId, '18446744073709551615');
+  assert.equal(first.receipt.serverMessageIdStatus, 'returned');
+  assert.equal(first.receipt.ret, 0);
+  assert.equal(JSON.stringify(first).includes('private-'), false);
+  const saved = await fs.readFile(path.join(f.config.stateDir, `mercari-weixin-health-${f.config.accountId}.json`), 'utf8');
+  assert.deepEqual(JSON.parse(saved).lastApiReceipt, first.receipt);
+  assert.equal(JSON.stringify(await transport.status()).includes('18446744073709551615'), false, 'public health must not expose upstream message IDs');
+  f.response({ ret: 0 });
+  const second = await transport.send('message', 'receipt-2');
+  assert.equal(second.accepted, true, 'a missing optional upstream ID must not cause automatic resending');
+  assert.equal(second.receipt.serverMessageId, null);
+  assert.equal(second.receipt.serverMessageIdStatus, 'missing');
+  assert.equal(f.calls.length, 2);
+});
+
 test("remote direct polling ignores an unrelated Gateway port while legacy local behavior remains unchanged", async t => {
   const f = await fixture(t); let probes = 0, updates = 0;
   f.dependencies.gatewayOnline = async () => { probes++; return true; };

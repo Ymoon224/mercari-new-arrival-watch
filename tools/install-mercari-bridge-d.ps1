@@ -10,7 +10,7 @@ try {
     if ($_.Exception.Message -eq 'Stop the existing bridge before updating its files.') { throw }
 }
 New-Item -ItemType Directory -Path $taskBridgeRoot -Force | Out-Null
-foreach ($taskName in @('main.mjs','service.mjs','weixin.mjs','recipients.mjs','discover.mjs','start.ps1','stop.ps1')) {
+foreach ($taskName in @('main.mjs','service.mjs','weixin.mjs','receipts.mjs','recipients.mjs','discover.mjs','start.ps1','stop.ps1')) {
     Copy-Item -LiteralPath (Join-Path $taskSourceRoot "bridge\$taskName") -Destination (Join-Path $taskBridgeRoot $taskName) -Force
 }
 & (Join-Path $taskInstall.nodeDir 'node.exe') (Join-Path $PSScriptRoot 'configure-weixin-bridge.mjs') $taskBridgeRoot

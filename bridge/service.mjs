@@ -1,6 +1,7 @@
 import http from "node:http";
 import { createHash, timingSafeEqual, randomBytes, randomUUID } from "node:crypto";
 import { readJson, writeJson } from "./weixin.mjs";
+import { sanitizeReceipt } from "./receipts.mjs";
 
 const DAY = 86400000;
 const unfinished = record => !record.doneAt && !record.skippedAt;
@@ -117,9 +118,14 @@ export async function createBridge({ token, stateFile, send, status, port = 1786
       if (record && unfinished(record)) {
         try {
           const clientId = `mercari-${digest(`${record.id}:${record.deliveryHash || record.hash}:${record.nextChunk}`).slice(0, 32)}`;
-          await send(record.chunks[record.nextChunk], clientId);
+          const outcome = await send(record.chunks[record.nextChunk], clientId);
+          const receipt = sanitizeReceipt(outcome?.receipt);
           await transaction(async () => {
             const updated = { ...record, nextChunk: record.nextChunk + 1, lastError: "", errorCode: "", attempts: 0, nextAttempt: 0 };
+            if (receipt?.clientId === clientId) {
+              updated.sendReceipts = [...(record.sendReceipts || []).filter(row => row.chunkIndex !== record.nextChunk),
+                { ...receipt, chunkIndex: record.nextChunk }];
+            }
             if (updated.nextChunk === updated.chunks.length) { updated.doneAt = clock(); delete updated.chunks; }
             await persist({ records: state.records.map(item => {
               if (item.id === record.id) return updated;

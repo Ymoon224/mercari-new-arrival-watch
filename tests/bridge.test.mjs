@@ -63,6 +63,27 @@ test("durable acceptance and duplicate retries survive a service restart", async
   await assert.rejects(restarted.accept({ ...sample, text: "different" }), /不同内容/);
 });
 
+test("upstream receipt metadata survives completion and restart without replaying accepted messages", async t => {
+  let calls = 0;
+  const f = await fixture(t, async (_text, clientId) => {
+    calls++;
+    return { accepted: true, receipt: { clientId, acceptedAt: Date.now(), ret: 0,
+      serverMessageId: null, serverMessageIdStatus: 'missing', token: 'must-not-be-saved' } };
+  });
+  await f.bridge.accept(sample);
+  await until(async () => (await f.bridge.health()).accepted === 1);
+  const text = await fs.readFile(f.stateFile, 'utf8');
+  const receipt = JSON.parse(text).records[0].sendReceipts[0];
+  assert.equal(receipt.ret, 0); assert.equal(receipt.serverMessageIdStatus, 'missing');
+  assert.equal(receipt.chunkIndex, 0); assert.match(receipt.clientId, /^mercari-/);
+  assert.equal(text.includes('must-not-be-saved'), false);
+  await f.bridge.close(); const restarted = await f.start();
+  await restarted.retryPending(); await delay(150);
+  assert.equal(calls, 1, 'missing message IDs alone never make a completed message retry');
+  assert.equal((await restarted.accept(sample)).duplicate, true);
+  assert.deepEqual(JSON.parse(await fs.readFile(f.stateFile, 'utf8')).records[0].sendReceipts[0], receipt);
+});
+
 test("failed chunks remain queued and successful chunks are not repeated after restart", async t => {
   let now = Date.now();
   const sent = [];
