@@ -4,6 +4,9 @@ import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 
 const API_BASE = "https://ilinkai.weixin.qq.com";
+// Allow up to one minute for a QR long poll. An idle poll timing out is normal;
+// it must not exhaust login attempts before the user finishes scanning.
+const QR_LONG_POLL_TIMEOUT_MS = 60_000;
 const ACTIVE = new Set(["starting", "wait", "scanned", "need_verifycode"]);
 const MESSAGES = {
   starting: "正在生成微信连接二维码", wait: "请用接收人的手机微信扫码",
@@ -74,7 +77,7 @@ export async function createWeixinLogin({ config, onBound = async () => {}, depe
         abort = () => reject(new Error("QR request cancelled"));
         session.controller.signal.addEventListener("abort", abort, { once: true });
         if (session.controller.signal.aborted) abort();
-        timer = setTimeout(() => reject(new Error("QR request timeout")), timeoutMs);
+        timer = setTimeout(() => reject(Object.assign(new Error("QR request timeout"), { code: "QR_REQUEST_TIMEOUT" })), timeoutMs);
       })]);
     } finally {
       clearTimeout(timer);
@@ -124,11 +127,12 @@ export async function createWeixinLogin({ config, onBound = async () => {}, depe
       if (session.status === "need_verifycode" && !session.verifyCode) { await delay(session, pollMs); continue; }
       try {
         const submittedCode = session.verifyCode;
+        const timeoutMs = Math.min(QR_LONG_POLL_TIMEOUT_MS, Math.max(1, session.expiresAt - now()));
         const endpoint = `ilink/bot/get_qrcode_status?qrcode=${encodeURIComponent(session.qrcode)}` +
           (submittedCode ? `&verify_code=${encodeURIComponent(submittedCode)}` : "");
         const response = JSON.parse(await request(session, api.apiGetFetch({ baseUrl: session.baseUrl, endpoint,
-          timeoutMs: Math.min(5000, Math.max(1, session.expiresAt - now())), label: "mercariQrStatus",
-          abortSignal: session.controller.signal }), 5500));
+          timeoutMs, label: "mercariQrStatus",
+          abortSignal: session.controller.signal }), timeoutMs + 1000));
         if (!pending(session)) return;
         if (response.errcode || response.ret) throw new Error("Official QR request rejected");
         if (response.status === "confirmed") { await confirm(session, response); return; }
@@ -147,13 +151,18 @@ export async function createWeixinLogin({ config, onBound = async () => {}, depe
         else throw new Error("Unknown official QR state");
         session.message = MESSAGES[session.status];
         session.failures = 0;
-      } catch {
+      } catch (error) {
         if (!pending(session)) return;
-        // GET's own timeout is short. The official 2.4.10 helper cannot abort a
-        // GET externally; logical cancellation still prevents all later saves.
-        session.failures++;
-        if (session.failures >= 5) { finish(session, "failed"); return; }
-        session.message = "微信连接状态暂时读取失败，正在重试；可取消后检查服务器网络";
+        // The official GET helper owns its timeout and cannot abort externally.
+        // Cancellation/expiry still prevents a late response saving an account.
+        if (error?.name === "AbortError" || error?.code === "QR_REQUEST_TIMEOUT") {
+          session.failures = 0;
+          session.message = MESSAGES[session.status];
+        } else {
+          session.failures++;
+          if (session.failures >= 5) { finish(session, "failed"); return; }
+          session.message = "微信连接状态暂时读取失败，正在重试；可取消后检查服务器网络";
+        }
       }
       await delay(session, pollMs);
     }

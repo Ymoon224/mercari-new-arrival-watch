@@ -97,3 +97,32 @@ test("account index write failure does not repeatedly persist credentials or imp
   assert.equal(fixture.saved.length, 1); assert.equal(imported, 0);
   assert.doesNotMatch(JSON.stringify(manager.status(session)), /new-private-token|EACCES/);
 });
+
+test("QR idle long-poll timeouts do not exhaust login attempts or prevent later account import", async t => {
+  const fixture = fake(); let polls = 0, imported = 0;
+  fixture.dependencies.api.apiGetFetch = async input => {
+    fixture.requests.push(input);
+    assert.equal(input.timeoutMs, 60_000, "QR status must allow a full minute for the long poll");
+    if (++polls <= 6) throw Object.assign(new Error("private-timeout-details"), { name: "AbortError" });
+    return JSON.stringify(confirmed);
+  };
+  const manager = await createWeixinLogin({ config: {}, dependencies: fixture.dependencies, onBound: async () => { imported++; } });
+  t.after(() => manager.close()); const session = await manager.start();
+  await until(() => manager.status(session).status === "connected");
+  assert.equal(polls, 7); assert.equal(imported, 1);
+  assert.equal(fixture.saved.length, 1); assert.equal(fixture.registered.length, 1);
+  assert.doesNotMatch(JSON.stringify(manager.status(session)), /private-timeout-details|new-private-token/);
+});
+
+test("QR poll deadline is bounded by the remaining session lifetime", async t => {
+  let now = 1000; const fixture = fake({ dependencies: { now: () => now, ttlMs: 2000 } });
+  fixture.dependencies.api.apiGetFetch = async input => {
+    assert.equal(input.timeoutMs, 2000);
+    now += 2001;
+    return JSON.stringify(confirmed);
+  };
+  const manager = await createWeixinLogin({ config: {}, dependencies: fixture.dependencies });
+  t.after(() => manager.close()); const session = await manager.start();
+  assert.equal(manager.status(session).status, "expired");
+  assert.equal(fixture.saved.length, 0);
+});
