@@ -4,6 +4,7 @@ import '../extension/shared.js';
 import { validateMonitor, duplicateKeyword, removeRecipientReferences, MAX_MONITORS } from '../extension/watches.js';
 import { messageFor } from '../extension/notify.js';
 import { readJson, writeJson } from '../bridge/weixin.mjs';
+import { validateCollectionSchedule, collectionScheduleStatus } from './schedule.mjs';
 
 const W = globalThis.MercariWatch;
 const idPattern = /^[a-zA-Z0-9_-]{1,80}$/;
@@ -20,6 +21,7 @@ export async function createMonitorService({ directory, collector, hub, clock = 
   if (db.schemaVersion !== 2 || !Array.isArray(db.monitors) || db.monitors.length > MAX_MONITORS || !db.states ||
     new Set(db.monitors.map(m => m.id)).size !== db.monitors.length) throw new Error('服务器监控数据格式不正确，请保留原数据后检查');
   db = structuredClone(db);
+  db.collectionSchedule = validateCollectionSchedule(db.collectionSchedule);
   for (const monitor of db.monitors) {
     if (!idPattern.test(monitor.id || '')) throw new Error('服务器监控编号不正确');
     Object.assign(monitor, validateMonitor(monitor, monitor));
@@ -45,12 +47,34 @@ export async function createMonitorService({ directory, collector, hub, clock = 
     if (ids.some(id => !available.some(row => row.id === id))) throw new Error('所选接收人已不存在，请重新选择');
   }
   function abort(id) { active.get(id)?.controller.abort(new Error('监控已暂停或设置已变化')); }
+  const scheduleState = () => collectionScheduleStatus(db.collectionSchedule, clock());
+  const scheduleClosed = () => Object.assign(new Error('当前不在采集时段'), { code: 'COLLECTION_SCHEDULE_CLOSED' });
+  function armScheduleCutoff(runtime) {
+    clearTimeout(runtime.scheduleTimer);
+    const state = scheduleState();
+    if (!state.allowed) { runtime.controller.abort(scheduleClosed()); return; }
+    if (state.nextChangeAt != null && !runtime.controller.signal.aborted) {
+      runtime.scheduleTimer = setTimeout(() => armScheduleCutoff(runtime), Math.max(1, state.nextChangeAt - clock()));
+    }
+  }
+  async function enforceSchedule() {
+    if (scheduleState().allowed) return;
+    for (const runtime of active.values()) runtime.controller.abort(scheduleClosed());
+    if (Object.values(db.states).some(state => state.run)) {
+      const next = structuredClone(db);
+      for (const state of Object.values(next.states)) state.run = null;
+      await commit(next);
+    }
+  }
 
   async function finish(monitor, runId, result, error) {
     await serial(async () => {
       const current = db.monitors.find(m => m.id === monitor.id);
       if (stopped || !current?.enabled || db.states[monitor.id]?.run?.id !== runId) return;
       const next = structuredClone(db), previous = next.states[monitor.id];
+      if (!scheduleState().allowed || error?.code === 'COLLECTION_SCHEDULE_CLOSED') {
+        previous.run = null; await commit(next); return;
+      }
       let state;
       if (error) {
         const message = /^(MERCARI_|COLLECTOR_)/.test(error.code || '') ? String(error.message).slice(0, 400) : 'HTTP 采集失败，请检查服务器网络或站点响应';
@@ -78,18 +102,32 @@ export async function createMonitorService({ directory, collector, hub, clock = 
   }
 
   async function launch(monitor, runId, controller) {
-    let timeout;
+    let timeout, abortListener;
+    const runtime = active.get(monitor.id);
     try {
+      if (!scheduleState().allowed) controller.abort(scheduleClosed());
+      if (controller.signal.aborted) throw controller.signal.reason;
+      armScheduleCutoff(runtime);
+      if (controller.signal.aborted) throw controller.signal.reason;
+      const cancelled = new Promise((_, reject) => {
+        abortListener = () => reject(controller.signal.reason || new Error('采集已取消'));
+        controller.signal.addEventListener('abort', abortListener, { once: true });
+        if (controller.signal.aborted) abortListener();
+      });
       const deadline = new Promise((_, reject) => {
         timeout = setTimeout(() => {
           const error = Object.assign(new Error('HTTP 采集超时，上一轮结果已保留'), { code: 'COLLECTOR_TIMEOUT' });
           controller.abort(error); reject(error);
         }, collectionTimeoutMs);
       });
-      const result = await Promise.race([collector(structuredClone(monitor), { signal: controller.signal }), deadline]);
+      const result = await Promise.race([collector(structuredClone(monitor), { signal: controller.signal }), deadline, cancelled]);
       await finish(monitor, runId, result, null);
     } catch (error) { await finish(monitor, runId, null, error); }
-    finally { clearTimeout(timeout); if (active.get(monitor.id)?.id === runId) active.delete(monitor.id); }
+    finally {
+      clearTimeout(timeout); clearTimeout(runtime?.scheduleTimer);
+      if (abortListener) controller.signal.removeEventListener('abort', abortListener);
+      if (active.get(monitor.id)?.id === runId) active.delete(monitor.id);
+    }
     await drain();
     wake();
   }
@@ -131,6 +169,8 @@ export async function createMonitorService({ directory, collector, hub, clock = 
     if (stopped) return Promise.resolve();
     tickTask = (async () => {
       const started = await serial(async () => {
+        await enforceSchedule();
+        if (!scheduleState().allowed) return null;
         if (stopped || active.size >= maxConcurrent || clock() < nextRequestAt) return null;
         const monitor = db.monitors.filter(m => m.enabled && !db.states[m.id].run && !active.has(m.id) && (db.states[m.id].nextCheckAt || 0) <= clock())
           .sort((a, b) => (db.states[a.id].nextCheckAt || 0) - (db.states[b.id].nextCheckAt || 0))[0];
@@ -184,6 +224,14 @@ export async function createMonitorService({ directory, collector, hub, clock = 
         await commit(next); if (type === 'pause-all') for (const id of active.keys()) abort(id);
         return { ok: true };
       }
+      if (type === 'save-collection-schedule') {
+        if (!message.schedule || typeof message.schedule !== 'object') throw new Error('请提供定时采集设置');
+        next.collectionSchedule = validateCollectionSchedule(message.schedule);
+        await commit(next);
+        for (const runtime of active.values()) armScheduleCutoff(runtime);
+        await enforceSchedule();
+        return { ok: true };
+      }
       if (type === 'save-settings') return { ok: true }; // Remote WeChat credentials are managed solely on the server.
       const monitor = find(message.monitorId), state = next.states[monitor.id];
       if (type === 'toggle') {
@@ -193,6 +241,7 @@ export async function createMonitorService({ directory, collector, hub, clock = 
       }
       if (type === 'check') {
         if (!monitor.enabled) throw new Error('请先开始此关键词的监控');
+        if (!scheduleState().allowed) throw new Error('当前不在采集时段，请修改定时采集设置后再检查');
         if (!state.run) state.nextCheckAt = clock(); await commit(next); return { ok: true };
       }
       if (type === 'clear-pending') { state.pending = []; await commit(next); return { ok: true }; }
@@ -218,10 +267,14 @@ export async function createMonitorService({ directory, collector, hub, clock = 
     return serial(async () => {
       const monitor = db.monitors.find(row => row.id === monitorId) || db.monitors[0];
       const health = await hub.health();
+      const schedule = scheduleState();
       return { version: '2.0.0', executionMode: 'remote', settings: { desktop: false, wechat: 'clawbot', hasToken: true },
+        collectionSchedule: structuredClone(db.collectionSchedule), scheduleStatus: schedule,
         recipients: recipientResult.recipients, recipientsError: recipientResult.cleanupWarnings?.map(row => row.message).join('；') || '',
         monitors: db.monitors.map(row => { const state = db.states[row.id]; return { ...row, running: Boolean(state.run), lastSuccess: state.lastSuccess,
-          lastError: state.lastError, failures: state.failures, nextCheckAt: state.nextCheckAt, pendingCount: state.pending.length }; }),
+          lastError: state.lastError, failures: state.failures,
+          nextCheckAt: !schedule.allowed && row.enabled ? Math.max(state.nextCheckAt || 0, schedule.nextChangeAt) : state.nextCheckAt,
+          pendingCount: state.pending.length }; }),
         selectedId: monitor?.id || null, state: monitor ? structuredClone(db.states[monitor.id]) : null,
         bridge: { connected: true, ...health, error: String(health.healthError || health.lastError || health.lastPollError || health.lastSendError || '').slice(0, 400) },
         server: { collector: 'http', running: !stopped, activeRequests: active.size, storageError, minRequestGapMs, maxConcurrent } };

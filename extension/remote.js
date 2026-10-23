@@ -1,6 +1,6 @@
 // The controller connection is separate from all saved local monitoring data.
 export const REMOTE_KEY = "remoteController";
-export const REMOTE_TYPES = new Set(["status", "save-monitor", "toggle", "check", "delete-monitor", "pause-all", "start-all", "save-settings", "clear-pending", "recipients", "sync-recipients", "save-recipient", "delete-recipient", "qr-start", "qr-status", "qr-cancel", "qr-verify", "retry-wechat", "test-notification"]);
+export const REMOTE_TYPES = new Set(["status", "save-monitor", "toggle", "check", "delete-monitor", "pause-all", "start-all", "save-collection-schedule", "save-settings", "clear-pending", "recipients", "sync-recipients", "save-recipient", "delete-recipient", "qr-start", "qr-status", "qr-cancel", "qr-verify", "retry-wechat", "test-notification"]);
 export function remoteUrl(input) {
   let url; try { url = new URL(String(input || "").trim()); } catch { throw new Error("请填写完整的服务器 HTTPS 地址"); }
   const loopback = ["localhost", "127.0.0.1"].includes(url.hostname);

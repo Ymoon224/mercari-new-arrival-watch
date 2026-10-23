@@ -19,13 +19,96 @@ let editingNew = false;
 let editorLoadedKey = null;
 let notificationsLoaded = false;
 let busy = false;
+let collectionSchedule = null;
+let scheduleStatus = null;
+let scheduleLoadedKey = null;
+let scheduleSavedStamp = "";
+let scheduleDirty = false;
+let scheduleSupported = false;
 const formatTime = value => value == null ? "尚无成功记录" : new Date(value).toLocaleString("zh-CN", { hour12: false });
 const shortTime = value => new Date(value).toLocaleTimeString("zh-CN", { hour12: false });
+const schedulePaused = () => executionMode === "remote" && collectionSchedule?.enabled && scheduleStatus?.allowed === false;
+const scheduleTime = value => new Date(value).toLocaleString("zh-CN", { timeZone: collectionSchedule?.timeZone || "Asia/Shanghai", hour12: false });
+const scheduleZoneName = () => collectionSchedule?.timeZone === "Asia/Tokyo" ? "日本时间" : "北京时间";
 function feedback(text, error = false) { $("feedback").textContent = text; $("feedback").className = error ? "error" : ""; }
 async function request(message) {
   const result = await chrome.runtime.sendMessage(message);
   if (result?.error) throw new Error(result.error);
   return result;
+}
+function resetSchedule() {
+  collectionSchedule = null; scheduleStatus = null; scheduleLoadedKey = null; scheduleSavedStamp = ""; scheduleDirty = false; scheduleSupported = false;
+  $("collection-schedule").hidden = true;
+}
+function scheduleControls() {
+  const enabled = $("schedule-enabled").checked;
+  $("schedule-timezone").disabled = !enabled;
+  const rows = [...$("schedule-windows").children];
+  for (const row of rows) {
+    for (const input of row.querySelectorAll("input")) input.disabled = !enabled;
+    row.querySelector("button").disabled = !enabled || rows.length <= 1;
+  }
+  $("add-schedule-window").disabled = !enabled || rows.length >= 8;
+  $("schedule-draft").hidden = !scheduleDirty;
+}
+function scheduleChanged() { scheduleDirty = true; scheduleControls(); }
+function scheduleDraft() {
+  return { enabled: $("schedule-enabled").checked, timeZone: $("schedule-timezone").value,
+    windows: [...$("schedule-windows").children].map(row => ({ start: row.querySelector('[data-boundary="start"]').value, end: row.querySelector('[data-boundary="end"]').value })) };
+}
+function addScheduleWindow(window = { start: "09:00", end: "23:00" }) {
+  const index = $("schedule-windows").children.length;
+  const row = document.createElement("div"); row.className = "schedule-window";
+  for (const [key, caption] of [["start", "开始时间"], ["end", "结束时间"]]) {
+    const label = document.createElement("label"); label.textContent = caption;
+    const input = document.createElement("input"); input.type = "time"; input.step = "60"; input.required = true; input.value = window[key]; input.dataset.boundary = key;
+    input.setAttribute("aria-label", `时段 ${index + 1} ${caption}`);
+    input.addEventListener("input", () => { input.setCustomValidity(""); scheduleChanged(); });
+    label.append(input); row.append(label);
+  }
+  const remove = document.createElement("button"); remove.type = "button"; remove.className = "secondary danger"; remove.textContent = "删除时段"; remove.setAttribute("aria-label", `删除时段 ${index + 1}`);
+  remove.addEventListener("click", () => { row.remove(); renumberScheduleWindows(); scheduleChanged(); });
+  row.append(remove); $("schedule-windows").append(row);
+}
+function renumberScheduleWindows() {
+  [...$("schedule-windows").children].forEach((row, index) => {
+    row.querySelector('[data-boundary="start"]').setAttribute("aria-label", `时段 ${index + 1} 开始时间`);
+    row.querySelector('[data-boundary="end"]').setAttribute("aria-label", `时段 ${index + 1} 结束时间`);
+    row.querySelector("button").setAttribute("aria-label", `删除时段 ${index + 1}`);
+  });
+}
+function renderSchedule(result) {
+  const remote = executionMode === "remote";
+  if (!remote) { resetSchedule(); return; }
+  const key = `${executionMode}:${controller.baseUrl || ""}`;
+  if (scheduleLoadedKey !== key) {
+    resetSchedule(); scheduleLoadedKey = key;
+  }
+  $("collection-schedule").hidden = false;
+  const saved = result.collectionSchedule;
+  const timePattern = /^(?:[01]\d|2[0-3]):[0-5]\d$/;
+  scheduleSupported = Boolean(saved && typeof saved.enabled === "boolean" && ["Asia/Shanghai", "Asia/Tokyo"].includes(saved.timeZone) && Array.isArray(saved.windows) && saved.windows.length >= 1 && saved.windows.length <= 8 && saved.windows.every(row => row && timePattern.test(row.start) && timePattern.test(row.end) && row.start !== row.end) && typeof result.scheduleStatus?.allowed === "boolean");
+  $("schedule-fields").disabled = !scheduleSupported;
+  $("schedule-form").hidden = !scheduleSupported;
+  $("schedule-unavailable").hidden = scheduleSupported;
+  $("schedule-unavailable").textContent = scheduleSupported ? "" : "当前服务器尚不支持采集时段，请更新服务器代码并重启 mercari-watch 后再设置。";
+  if (!scheduleSupported) {
+    collectionSchedule = null; scheduleStatus = null;
+    $("schedule-status").textContent = "需要更新服务器"; $("schedule-status").className = "pill";
+    return;
+  }
+  const stamp = JSON.stringify(saved);
+  if (!scheduleDirty && stamp !== scheduleSavedStamp) {
+    $("schedule-enabled").checked = saved.enabled; $("schedule-timezone").value = saved.timeZone;
+    $("schedule-windows").replaceChildren(); saved.windows.forEach(addScheduleWindow);
+  }
+  scheduleSavedStamp = stamp; collectionSchedule = saved; scheduleStatus = result.scheduleStatus;
+  scheduleControls();
+  const summary = !saved.enabled ? "全天按间隔采集" : scheduleStatus.allowed ? "当前在采集时段" : "当前在休息时段";
+  if ($("schedule-status").textContent !== summary) $("schedule-status").textContent = summary;
+  $("schedule-status").className = `pill${saved.enabled && scheduleStatus.allowed ? " running" : ""}`;
+  const next = Number.isFinite(scheduleStatus.nextChangeAt) ? `${scheduleTime(scheduleStatus.nextChangeAt)}（${scheduleZoneName()}）` : "";
+  $("schedule-next").textContent = !saved.enabled ? "未限制采集时间，已启用的关键词全天按各自间隔检查。" : scheduleStatus.allowed ? next ? `本时段结束：${next}。到时暂停 Mercari 采集。` : "当前时段允许采集，关键词按各自间隔检查。" : next ? `下次开启：${next}。到时仅恢复已启用的关键词。` : "当前暂停 Mercari 采集，等待下一个已保存时段。";
 }
 function providerFields() {
   const provider = $("wechat").value;
@@ -57,7 +140,7 @@ function renderMonitors() {
     choose.setAttribute("aria-pressed", String(monitor.id === selectedId));
     const name = document.createElement("strong"); name.textContent = monitor.keyword;
     const detail = document.createElement("span"); detail.className = "watch-detail";
-    const status = !monitor.enabled ? "已暂停" : monitor.running ? "正在检查" : monitor.nextCheckAt && monitor.nextCheckAt > Date.now() ? `下次 ${shortTime(monitor.nextCheckAt)}` : "等待检查";
+    const status = !monitor.enabled ? "已暂停" : schedulePaused() ? `休息时段${monitor.nextCheckAt ? ` · 下次 ${scheduleTime(monitor.nextCheckAt)}（${scheduleZoneName()}）` : ""}` : monitor.running ? "正在检查" : monitor.nextCheckAt && monitor.nextCheckAt > Date.now() ? `下次 ${shortTime(monitor.nextCheckAt)}` : "等待检查";
     const names = (monitor.recipientIds || ["owner"]).map(id => recipients.find(row => row.id === id)?.name || (id === "owner" ? "我的微信" : "未加载用户"));
     detail.textContent = `每 ${monitor.intervalMinutes} 分钟 · ${status}${monitor.lastError ? ` · 连续异常 ${monitor.failures} 次` : ""}${settings.wechat === "clawbot" ? ` · 接收：${names.join("、") || "不发微信"}` : ""}`;
     choose.append(name, detail);
@@ -171,10 +254,11 @@ function renderState(state) {
   }
   $("watch-label").textContent = `${selected.keyword} · 每 ${selected.intervalMinutes} 分钟检查`;
   $("toggle").textContent = selected.enabled ? "暂停此关键词" : "开始此关键词";
-  $("check").disabled = !selected.enabled || Boolean(state.run);
+  $("check").disabled = !selected.enabled || Boolean(state.run) || schedulePaused();
+  $("check").title = schedulePaused() ? "当前不在采集时段，暂不访问 Mercari" : "";
   $("search-link").href = `https://jp.mercari.com/search?${new URLSearchParams({ keyword: selected.keyword, order: "desc", sort: "created_time" })}`;
   $("search-link").hidden = false;
-  $("activity").textContent = state.lastError || state.warning || `上次成功：${formatTime(state.lastSuccess)}${state.initialized ? "" : " · 首轮只建立基线"}`;
+  $("activity").textContent = schedulePaused() && selected.enabled ? `当前不在采集时段，暂停访问 Mercari。上次成功：${formatTime(state.lastSuccess)}` : state.lastError || state.warning || `上次成功：${formatTime(state.lastSuccess)}${state.initialized ? "" : " · 首轮只建立基线"}`;
   $("diagnostic").textContent = state.lastError ? `${selected.keyword} · 连续异常 ${state.failures || 0} 次：${state.lastError}${state.failureAlerted ? "。异常提醒已生成。" : "。超过 5 次时会通过已配置渠道提醒。"}` : "";
   $("snapshot").replaceChildren();
   if (state.top.length) { $("snapshot").className = ""; state.top.forEach((item, i) => $("snapshot").append(itemNode(item, i))); }
@@ -201,6 +285,7 @@ async function refresh() {
   if (result.version !== "2.0.0" || !Array.isArray(result.monitors)) throw new Error("扩展后台仍是旧版，请在扩展管理页重新加载插件，再关闭旧面板重新打开。新版页眉应显示 v2.0.0。");
   executionMode = result.executionMode || "local"; controller = result.controller || { mode: executionMode };
   renderConnection();
+  renderSchedule(result);
   $("server-state").hidden = executionMode !== "remote" || !result.server;
   if (result.server) $("server-state").textContent = result.server.storageError || `服务${result.server.running ? "运行中" : "已停止"} · 当前采集 ${result.server.activeRequests || 0} 项 · 已启用 ${result.monitors.filter(item => item.enabled).length} 项`;
   settings = result.settings; monitors = result.monitors;
@@ -217,6 +302,7 @@ async function refresh() {
   const failed = monitors.filter(item => item.enabled && item.lastError).length;
   $("status").textContent = failed ? `${failed} 项异常` : enabled ? `${enabled} 项监控中` : "已暂停";
   $("status").className = `pill ${failed ? "error" : enabled ? "running" : ""}`;
+  if (schedulePaused() && enabled) { $("status").textContent = `${enabled} 项等待采集时段`; $("status").className = "pill"; }
   if (executionMode === "local" && controller.localSuspended) { $("status").textContent = "本机采集待启用"; $("status").className = "pill"; }
   renderMonitors(); renderEditor(); renderState(result.state);
   renderRecipients(result.recipientsError);
@@ -314,14 +400,39 @@ $("connection-form").addEventListener("submit", event => {
     if (!await permission) throw new Error("未允许访问服务器，连接未保存");
     if (!remote && !confirm("切换到本机模式？远端任务会继续运行，切换不会自动暂停远端。本机配置会保留，采集需要另行启用。")) return;
     await request(remote ? { type: "connect-remote", baseUrl: $("server-url").value, token: $("server-token").value } : { type: "switch-local" });
-    $("server-token").value = ""; connectionLoaded = false; notificationsLoaded = false; editorLoadedKey = null; recipientChoiceKey = null; selectedId = null; editingNew = false; qrSession = null; $("qr-box").hidden = true;
+    $("server-token").value = ""; connectionLoaded = false; notificationsLoaded = false; editorLoadedKey = null; recipientChoiceKey = null; selectedId = null; editingNew = false; qrSession = null; $("qr-box").hidden = true; resetSchedule();
     feedback(remote ? "已连接服务器，本机采集和本机待发重试已停止。原本机配置保留，未自动上传。" : "已切换本机模式，采集尚未恢复。");
   });
 });
-$("disconnect-server").addEventListener("click", () => action(async () => { if (!confirm("移除本机保存的服务器地址和管理密钥？服务器上的采集仍会继续，需暂停请先取消并使用“暂停全部采集”。")) return; await request({ type: "disconnect-remote" }); connectionLoaded = false; editorLoadedKey = null; selectedId = null; qrSession = null; $("qr-box").hidden = true; feedback("已移除本机连接；远端任务状态未变。本机不恢复采集。"); }));
+$("disconnect-server").addEventListener("click", () => action(async () => { if (!confirm("移除本机保存的服务器地址和管理密钥？服务器上的采集仍会继续，需暂停请先取消并使用“暂停全部采集”。")) return; await request({ type: "disconnect-remote" }); connectionLoaded = false; editorLoadedKey = null; selectedId = null; qrSession = null; $("qr-box").hidden = true; resetSchedule(); feedback("已移除本机连接；远端任务状态未变。本机不恢复采集。"); }));
 $("activate-local").addEventListener("click", () => action(async () => { if (!confirm("确认远端监控已暂停？启用本机可能与仍运行的远端任务重复推送。")) return; await request({ type: "activate-local" }); feedback("本机采集已启用。"); }));
 $("pause-all").addEventListener("click", () => action(async () => { await request({ type: "pause-all" }); editorLoadedKey = null; feedback("全部采集已暂停，不再发起 Mercari 采集请求。微信待发消息独立处理。"); }));
-$("start-all").addEventListener("click", () => action(async () => { await request({ type: "start-all" }); editorLoadedKey = null; feedback("全部关键词已开始采集。"); }));
+$("start-all").addEventListener("click", () => action(async () => { await request({ type: "start-all" }); editorLoadedKey = null; feedback(schedulePaused() ? "全部关键词已启用，将在下一个采集时段开始访问 Mercari。" : "全部关键词已开始采集。"); }));
+$("schedule-enabled").addEventListener("change", scheduleChanged);
+$("schedule-timezone").addEventListener("change", scheduleChanged);
+$("add-schedule-window").addEventListener("click", () => {
+  if ($("schedule-windows").children.length >= 8) return;
+  addScheduleWindow(); scheduleChanged();
+  $("schedule-windows").lastElementChild.querySelector("input").focus();
+});
+$("schedule-form").addEventListener("submit", event => {
+  event.preventDefault();
+  action(async () => {
+    if (executionMode !== "remote" || !scheduleSupported) throw new Error("当前服务器尚不支持采集时段，请先更新服务器并重新连接。");
+    const schedule = scheduleDraft();
+    const { windows } = schedule;
+    if (!windows.length || windows.length > 8) throw new Error("请设置 1–8 个采集时段。");
+    for (const [index, window] of windows.entries()) {
+      if (!/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(window.start) || !/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(window.end)) throw new Error(`请填写时段 ${index + 1} 的开始和结束时间。`);
+      if (window.start === window.end) throw new Error(`时段 ${index + 1} 的开始和结束时间不能相同。需要全天采集时，请取消“启用每日采集时段”。`);
+    }
+    const submittedStamp = JSON.stringify(schedule);
+    await request({ type: "save-collection-schedule", schedule });
+    scheduleDirty = JSON.stringify(scheduleDraft()) !== submittedStamp;
+    if (!scheduleDirty) scheduleSavedStamp = "";
+    feedback(`${schedule.enabled ? "采集时段已保存并在服务器生效。时段外停止访问 Mercari，手动暂停的关键词保持暂停。" : "已取消采集时段限制，已启用的关键词全天按各自间隔采集。"}${scheduleDirty ? "你在保存期间编辑的内容仍待保存。" : ""}`);
+  });
+});
 $("add-recipient").addEventListener("click", () => action(async () => { await renderQr(await request({ type: "qr-start" })); }));
 $("qr-cancel").addEventListener("click", () => action(async () => { if (qrSession) await renderQr(await request({ type: "qr-cancel", id: qrSession.id })); }));
 $("qr-verify-form").addEventListener("submit", event => { event.preventDefault(); action(async () => { if (qrSession) await renderQr(await request({ type: "qr-verify", id: qrSession.id, code: $("qr-code-input").value })); $("qr-code-input").value = ""; }); });

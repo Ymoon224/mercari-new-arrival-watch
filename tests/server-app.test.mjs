@@ -65,3 +65,10 @@ test('authentication throttling does not lock out a valid administrator and unex
   f.monitor.admin = async () => { throw new Error('微信异常 token=' + token); };
   const response = await (await f.post()).text(); assert.equal(response.includes(token), false); assert.equal(response.includes('token='), false);
 });
+
+test('collection schedule changes require administrator authentication and route through the monitor service', async t => {
+  const f = await fixture(t);
+  const input = { type: 'save-collection-schedule', schedule: { enabled: true, timeZone: 'Asia/Shanghai', windows: [{ start: '09:00', end: '23:00' }] } };
+  assert.equal((await f.post(input, { Authorization: '' })).status, 401); assert.equal(f.calls.length, 0);
+  assert.equal((await f.post(input)).status, 200); assert.deepEqual(f.calls[0], input);
+});

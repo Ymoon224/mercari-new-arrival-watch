@@ -4,7 +4,7 @@ import { messageFor } from '../extension/notify.js';
 
 const extensionOrigin = /^chrome-extension:\/\/[a-p]{32}$/;
 const loopback = address => ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(address);
-const monitorActions = new Set(['status', 'save-monitor', 'toggle', 'check', 'delete-monitor', 'pause-all', 'start-all', 'save-settings', 'clear-pending', 'retry-wechat']);
+const monitorActions = new Set(['status', 'save-monitor', 'toggle', 'check', 'delete-monitor', 'pause-all', 'start-all', 'save-settings', 'clear-pending', 'retry-wechat', 'save-collection-schedule']);
 const recipientActions = new Set(['recipients', 'sync-recipients', 'save-recipient', 'delete-recipient']);
 const loginActions = { 'qr-start': 'start', 'qr-status': 'status', 'qr-cancel': 'cancel', 'qr-verify': 'verify' };
 
@@ -91,7 +91,7 @@ export async function createRemoteApp({ config, monitor, hub, login, clock = Dat
       return send(200, { ok: true, ...result });
     } catch (error) {
       const text = String(error.message || '');
-      const safe = /管理|关键词|监控|接收人|用户|微信|队列|编号|请求|扫码|二维码|配对|配置|服务器|间隔|扫描|屏蔽|来源/.test(text) &&
+      const safe = /管理|关键词|监控|接收人|用户|微信|队列|编号|请求|扫码|二维码|配对|配置|服务器|间隔|扫描|屏蔽|来源|时段|时间|定时/.test(text) &&
         !text.includes(config.token) && !/[a-z/\\]/i.test(text.replace(/\b(?:JSON|HTTP|HTTPS|ID)\b/g, ''));
       return send(error.status || 400, { error: safe ? String(error.message).slice(0, 400) : '服务器处理失败，请查看服务运行状态' });
     }

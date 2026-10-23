@@ -19,6 +19,25 @@
       </form>
     </section>
     <div id="monitor-actions" class="buttons global-actions"><button id="pause-all" type="button" class="secondary">暂停全部采集</button><button id="start-all" type="button">开始全部采集</button></div>
+    <section id="collection-schedule" class="card" hidden>
+      <div class="section-head"><h2>每日采集时段</h2><span id="schedule-status" class="pill" role="status" aria-live="polite">正在读取服务器设置</span></div>
+      <p class="muted">只在设定时段访问 Mercari，其他时间自动暂停采集。微信推送和管理服务继续运行；手动暂停的关键词不会被定时开启。</p>
+      <p id="schedule-unavailable" class="muted" role="status" hidden></p>
+      <form id="schedule-form">
+        <fieldset id="schedule-fields" class="schedule-fields">
+          <legend class="visually-hidden">每日采集时间设置</legend>
+          <label class="checkbox"><input id="schedule-enabled" type="checkbox">启用每日采集时段</label>
+          <div id="schedule-times">
+            <label for="schedule-timezone">时区</label><select id="schedule-timezone"><option value="Asia/Shanghai">北京时间（UTC+8）</option><option value="Asia/Tokyo">日本时间（UTC+9）</option></select>
+            <div id="schedule-windows" class="schedule-windows"></div>
+            <button id="add-schedule-window" type="button" class="secondary">＋ 添加时段</button>
+            <p class="muted">每天重复，最多 8 个时段。结束时间早于开始时间表示跨午夜，例如 22:00–02:00。开始时间与结束时间不能相同。</p>
+          </div>
+          <p id="schedule-next" class="muted"></p><p id="schedule-draft" class="muted" role="status" hidden>有未保存的修改；当前采集仍按服务器已保存的时段执行。</p>
+          <button id="save-schedule" type="submit">保存采集时段</button>
+        </fieldset>
+      </form>
+    </section>
     <section class="card"><div class="section-head"><h2>关键词监控 <span id="monitor-count" class="muted"></span></h2><button id="new-monitor" class="secondary" type="button">＋ 添加关键词</button></div><div id="monitor-list" class="watch-list"></div><p class="muted">点击关键词查看商品和记录。每条可单独开始、暂停及设置检查间隔。</p></section>
     <section id="recipient-management" class="card" hidden><details><summary><strong>微信接收人管理 · 仅管理员</strong></summary><p class="muted">接收人只有收消息和回复激活的权限，不能通过微信更改关键词、间隔或其他用户设置。</p><p id="add-recipient-hint" class="muted">添加用户：先双击 D:\OpenClaw\mercari-bridge\添加微信接收人.cmd，让新用户微信扫码，再点“同步已绑定用户”。新用户不会自动订阅已有关键词；请在任务设置中勾选接收人。</p><div class="buttons"><button id="add-recipient" type="button" hidden>＋ 扫码添加接收人</button><button id="sync-recipients" type="button" class="secondary">同步已绑定用户</button></div><div id="qr-box" hidden><p id="qr-status" role="status"></p><img id="qr-image" alt="微信接收人绑定二维码" width="240" height="240" hidden><form id="qr-verify-form" hidden><label for="qr-code-input">手机显示的验证码</label><input id="qr-code-input" inputmode="numeric" pattern="[0-9]{4,12}" maxlength="12" required autocomplete="one-time-code"><button type="submit">提交验证码</button></form><button id="qr-cancel" type="button" class="secondary">取消扫码</button></div><p id="recipients-error" class="muted"></p><div id="recipient-list"></div></details></section>
     <section id="selected-controls" class="controls card"><div><strong id="watch-label">当前关键词</strong><p id="activity">首次检查只建立基线，不发送旧商品。</p></div><div class="buttons"><button id="check" class="secondary">立即检查</button><button id="toggle">开始此关键词</button></div></section>

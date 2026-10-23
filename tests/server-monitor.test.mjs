@@ -120,3 +120,88 @@ test('removing a recipient updates shared tasks without rerouting or stopping ot
   const status = await f.engine.status(id); assert.deepEqual(status.monitors[0].recipientIds, ['owner']); assert.equal(status.monitors[0].enabled, true);
   await f.engine.removeRecipients(['owner']); assert.equal((await f.engine.status(id)).monitors[0].enabled, false);
 });
+
+const at = value => Date.parse(`2026-10-${value}+08:00`);
+const daily = (windows = [{ start: '09:00', end: '11:00' }]) => ({ enabled: true, timeZone: 'Asia/Shanghai', windows });
+test('daily schedule blocks manual and automatic collection outside hours without changing keyword enable flags', async t => {
+  const f = await fixture(t); f.time(at('23T08:00:00'));
+  const id = await f.add();
+  assert.equal((await f.engine.status()).collectionSchedule.enabled, false, 'existing installations default to unrestricted collection');
+  await f.engine.admin({ type: 'save-collection-schedule', schedule: daily() });
+  await f.engine.admin({ type: 'start-all' }); await f.collect();
+  assert.equal(f.requests.length, 0);
+  await assert.rejects(() => f.engine.admin({ type: 'check', monitorId: id }), /不在采集时段/);
+  const closed = await f.engine.status(id);
+  assert.equal(closed.monitors[0].enabled, true);
+  assert.equal(closed.scheduleStatus.allowed, false);
+  assert.equal(closed.monitors[0].nextCheckAt, at('23T09:00:00'));
+  f.time(at('23T09:00:00')); await f.collect(); assert.equal(f.requests.length, 1);
+  await f.engine.admin({ type: 'pause-all' });
+  f.time(at('24T09:00:00')); await f.collect(); assert.equal(f.requests.length, 1, 'a new daily window must not enable manually paused tasks');
+  await f.engine.admin({ type: 'start-all' }); await f.collect(); assert.equal(f.requests.length, 2);
+  const previous = (await f.engine.status()).collectionSchedule;
+  await assert.rejects(() => f.engine.admin({ type: 'save-collection-schedule', schedule: daily([{ start: '11:00', end: '11:00' }]) }));
+  assert.deepEqual((await f.engine.status()).collectionSchedule, previous, 'invalid input must leave durable settings untouched');
+});
+
+test('schedule persists through restart, keeps baseline and drains already discovered messages during off hours', async t => {
+  const f = await fixture(t); f.time(at('23T09:00:00')); const id = await f.add();
+  await f.engine.admin({ type: 'save-collection-schedule', schedule: daily() }); await f.collect();
+  const accept = f.hub.accept; f.hub.accept = async () => { throw new Error('temporary relay outage'); };
+  f.advance(60000); f.sample(products(9, 1, 2, 3, 4)); await f.collect();
+  assert.equal((await f.engine.status(id)).state.pending.length, 1);
+  f.time(at('23T11:00:00')); f.hub.accept = accept; await f.collect();
+  assert.equal(f.requests.length, 2); assert.equal(f.accepted.size, 1);
+  assert.equal((await f.engine.status(id)).state.pending.length, 0);
+  await f.engine.close(); const restarted = await f.start(); await f.collect(restarted);
+  assert.equal(f.requests.length, 2); assert.deepEqual((await restarted.status()).collectionSchedule, daily());
+  f.time(at('24T09:00:00')); f.sample(products(10, 9, 1, 2, 3)); await f.collect(restarted);
+  const state = (await restarted.status(id)).state;
+  assert.equal(state.initialized, true); assert.equal(state.lastWindow[0], 'item:m10');
+  assert.equal(f.accepted.size, 2); assert.match([...f.accepted.values()].at(-1).text, /item\/m10/);
+});
+
+test('closing the daily window aborts in-flight work and discards late responses without failures or baseline changes', async t => {
+  const pending = []; let calls = 0;
+  const f = await fixture(t, { collector: async (monitor, { signal }) => {
+    if (++calls === 1) return { items: products(1, 2, 3, 4, 5) };
+    return new Promise(resolve => pending.push({ signal, resolve }));
+  } });
+  f.time(at('23T10:59:58')); const id = await f.add();
+  await f.engine.admin({ type: 'save-collection-schedule', schedule: daily() }); await f.collect();
+  await f.engine.admin({ type: 'check', monitorId: id }); await f.engine.tick();
+  assert.equal(pending.length, 1);
+  f.advance(2000); await f.engine.tick(); await f.engine.waitIdle();
+  assert.equal(pending[0].signal.aborted, true);
+  pending[0].resolve({ items: products(9, 1, 2, 3, 4) }); await new Promise(resolve => setImmediate(resolve));
+  const status = await f.engine.status(id);
+  assert.equal(status.state.failures, 0); assert.equal(status.state.run, null);
+  assert.deepEqual(status.state.lastWindow, ['item:m1', 'item:m2', 'item:m3', 'item:m4', 'item:m5']);
+  assert.equal(status.monitors[0].enabled, true); assert.equal(f.accepted.size, 0);
+});
+
+test('editing a schedule cancels excluded work, and disabling the timer permits normal collection again', async t => {
+  const pending = [];
+  const f = await fixture(t, { collector: async (monitor, { signal }) => new Promise(resolve => pending.push({ signal, resolve })) });
+  f.time(at('23T12:00:00')); const id = await f.add(); await f.engine.tick();
+  await f.engine.admin({ type: 'save-collection-schedule', schedule: daily() }); await f.engine.waitIdle();
+  assert.equal(pending[0].signal.aborted, true);
+  assert.equal((await f.engine.status(id)).state.failures, 0);
+  await f.engine.admin({ type: 'save-collection-schedule', schedule: { ...daily(), enabled: false } });
+  await f.engine.tick(); assert.equal(pending.length, 2);
+  pending[1].resolve({ items: products(1, 2, 3, 4, 5) }); await f.engine.waitIdle();
+  assert.equal((await f.engine.status(id)).state.initialized, true);
+});
+
+test('the exact end-of-window timer aborts collection even without another scheduler tick', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let signal;
+  const f = await fixture(t, { collector: async (monitor, options) => { signal = options.signal; return new Promise(() => {}); } });
+  f.time(at('23T10:59:59')); const id = await f.add();
+  await f.engine.admin({ type: 'save-collection-schedule', schedule: daily() }); await f.engine.tick();
+  assert.ok(signal); assert.equal(signal.aborted, false);
+  f.advance(1000); t.mock.timers.tick(1000); await f.engine.waitIdle();
+  assert.equal(signal.aborted, true);
+  const status = await f.engine.status(id);
+  assert.equal(status.state.failures, 0); assert.equal(status.state.initialized, false); assert.equal(status.state.run, null);
+});

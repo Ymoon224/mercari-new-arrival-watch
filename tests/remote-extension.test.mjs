@@ -50,6 +50,9 @@ test("connecting remote suspends local collector and retries while preserving lo
   assert.equal(requests.at(-1).url, "https://example.com/api/admin"); assert.equal(JSON.parse(requests.at(-1).body).monitor.keyword, "x");
   assert.equal(requests.at(-1).headers.Authorization, `Bearer ${token}`); assert.equal(requests.at(-1).redirect, "error"); assert.equal(requests.at(-1).credentials, "omit");
   assert.equal(data.monitors[0].keyword, "潔世一");
+  await request({ type: "save-collection-schedule", schedule: { enabled: true, timeZone: "Asia/Shanghai", windows: [{ start: "09:00", end: "23:00" }] } });
+  assert.equal(JSON.parse(requests.at(-1).body).type, "save-collection-schedule");
+  assert.equal(data.collectionSchedule, undefined, "the server owns the collection schedule; it must not start a local timer");
   const countRequests = requests.length;
   assert.deepEqual(await request({ type: "collector-ready" }, { url: "https://jp.mercari.com/search", frameId: 0, tab: { id: 91 } }), {});
   assert.equal(requests.length, countRequests);
